@@ -18,7 +18,7 @@ Repository maintainers who want AI-assisted development with mandatory human app
 
 ## Features
 
-1. **Issue monitoring** -- Discover new issues on a tracked repository by polling
+1. **Issue monitoring** -- Discover new issues by polling all open issues in the repository; new issues not yet tracked are inserted as Discovered
 2. **Spec generation** -- Analyze a discovered issue and produce a SPEC.md via pull request
 3. **Mission decomposition** -- Break an approved spec into sub-issues, post plan for approval
 4. **Agent implementation** -- Spawn isolated AI agents to implement each sub-issue, each producing a PR
@@ -26,6 +26,12 @@ Repository maintainers who want AI-assisted development with mandatory human app
 6. **Error handling and retry** -- Transition to failed state on errors; retry via `/retry` comment or CLI
 7. **CLI interface** -- Start daemon, view status, retry and reset issues
 8. **Usage tracking** -- Record token usage per AI invocation for cost monitoring
+
+## Success Criteria
+
+- Every state transition produces a GitHub comment on the tracked issue for auditability
+- No code is pushed to the repository without a preceding human approval event (PR merge or `/approve`)
+- All AI token usage is recorded with per-issue attribution in the usage log
 
 ## Non-Goals
 
@@ -51,8 +57,8 @@ Repository maintainers who want AI-assisted development with mandatory human app
 ### Decomposition approved
 
 **Context**: The maintainer reviews the proposed sub-issues and comments `/approve`.
-**Action**: The daemon creates GitHub sub-issues and spawns isolated AI agents to implement each.
-**Outcome**: Each sub-issue gets its own PR opened when its agent completes.
+**Action**: The daemon creates GitHub sub-issues and spawns isolated AI agents to implement each in separate worktrees.
+**Outcome**: Each sub-issue gets its own PR opened against the default branch when its agent completes.
 
 ### Decomposition feedback
 
@@ -63,8 +69,8 @@ Repository maintainers who want AI-assisted development with mandatory human app
 ### All sub-issues implemented
 
 **Context**: All sub-issue PRs have been merged by the maintainer.
-**Action**: The daemon opens a final integration PR combining all work.
-**Outcome**: The maintainer reviews and merges the final PR to complete the issue.
+**Action**: The daemon detects all sub-PRs are merged and transitions the issue to Done.
+**Outcome**: The issue is marked complete. No further action required.
 
 ### Agent failure
 
@@ -81,12 +87,10 @@ Each tracked issue moves through these states:
 | Discovered | Active | New issue found, pending spec generation |
 | SpecDrafting | Active | AI analyzes the issue and generates a SPEC.md |
 | AwaitSpecApproval | Blocking | Spec PR open, waiting for human merge |
-| Decomposing | Active | AI breaks the approved spec into sub-tasks |
-| DecompProposed | Active | Decomposition plan posted as issue comment |
+| Decomposing | Active | AI breaks the approved spec into sub-tasks and posts the plan as an issue comment |
 | AwaitDecompApproval | Blocking | Waiting for `/approve`; feedback re-triggers Decomposing |
 | AgentsWorking | Active | AI agents working concurrently on sub-issues in isolated worktrees |
 | AwaitSubPRApprovals | Blocking | All sub-issue PRs open, waiting for human merge of each |
-| AwaitFinalApproval | Blocking | Final integration PR open, waiting for human merge |
 | Done | Terminal | Issue fully resolved |
 | Failed | Terminal (retryable) | Error occurred; retryable via `/retry` |
 
@@ -96,8 +100,12 @@ Each tracked issue moves through these states:
 |------------|-----------|
 | Active states advance | Daemon performs work on next poll cycle |
 | Blocking states advance | Daemon detects approval signal (PR merged or `/approve` comment) |
-| AgentsWorking to AwaitSubPRApprovals | All sub-issues have an open PR |
+| Decomposing to AwaitDecompApproval | AI produces decomposition plan and daemon posts it as an issue comment |
 | AwaitDecompApproval to Decomposing | Feedback (non-`/approve` reply) received |
+| AgentsWorking to AwaitSubPRApprovals | All sub-issue agents have finished and each has an open PR |
+| AgentsWorking to Failed | All agents have finished and at least one sub-issue failed |
+| AwaitSubPRApprovals to Done | All sub-issue PRs have been merged |
+| Any Await* to Failed | Associated PR is closed without merge |
 | Any active to Failed | Unrecoverable error during transition |
 | Failed to previous active state | `/retry` comment or CLI retry command |
 
@@ -105,19 +113,36 @@ Each tracked issue moves through these states:
 
 | Gate | Mechanism | Used For |
 |------|-----------|----------|
-| Code changes | PR merge by human | Spec PRs, sub-issue PRs, final integration PR |
+| Code changes | PR merge by human | Spec PRs, sub-issue PRs |
 | Planning decisions | `/approve` comment by human | Decomposition approval |
 
 The daemon never force-merges a PR or auto-approves a plan.
 
 For comment-based approvals, any reply that is not `/approve` is treated as feedback. The daemon re-runs the planning step with the feedback appended and posts a revised proposal.
 
+If a PR associated with an approval gate is closed without merge, the issue transitions to Failed.
+
+## Issue Discovery
+
+The daemon polls all open issues in the repository on each cycle. Any open issue not already tracked in SQLite is inserted as Discovered. The daemon applies the configured `tracking_label` to newly discovered issues for visibility; the label is not used as a discovery filter.
+
+## Branch Naming and Targets
+
+All PRs target the repository's default branch. Each agent works on a branch named `hammurabi/<issue_number>-<task>` (e.g., `hammurabi/42-spec`, `hammurabi/42-sub1`).
+
 ## Error Handling
 
 | Scenario | Behavior |
 |----------|----------|
 | AI agent exits with error or produces no output | Issue transitions to Failed; error details posted as GitHub comment |
-| Retry requested | `/retry` comment or `hammurabi retry <number>` resets to previous active state |
+| PR closed without merge | Issue transitions to Failed; retryable via `/retry` to regenerate the artifact |
+| Partial agent failure | Remaining agents continue to completion; when all finish, if any sub-issue failed the parent transitions to Failed. `/retry` re-runs only the failed sub-issues |
+| GitHub API transient error (rate limit, network) | Daemon retries within the current poll cycle with exponential backoff; logs a warning |
+| GitHub API persistent error | After `api_retry_count` consecutive failures (default: 3), the affected issue transitions to Failed |
+| Daemon restart | Daemon resumes from SQLite state on startup; reconciles each tracked issue against GitHub (checks for PR merges, new comments, closed issues that occurred while stopped) |
+| Issue closed or deleted externally | Tracked issue transitions to Done; daemon posts no further comments |
+| Worktree already exists | Daemon removes the stale worktree and recreates it |
+| Retry requested | `/retry` comment on the failed issue, or `hammurabi retry <number>`, resets to previous active state. `/retry` comments on non-Failed issues are ignored |
 | Stale blocking state | Issues in blocking states beyond configurable timeout (default: 7 days) receive a reminder comment; no auto-cancellation |
 
 ## Configuration
@@ -127,8 +152,9 @@ For comment-based approvals, any reply that is not `/approve` is treated as feed
 | repo | GitHub repository (owner/repo format) | Required |
 | poll_interval | Seconds between poll cycles | 60 |
 | max_concurrent_agents | Maximum parallel AI agent invocations | 3 |
-| tracking_label | GitHub label to identify tracked issues | hammurabi |
+| tracking_label | GitHub label applied by daemon to tracked issues for visibility | hammurabi |
 | stale_timeout_days | Days before a blocking state gets a reminder | 7 |
+| api_retry_count | Consecutive GitHub API failures before transitioning to Failed | 3 |
 | ai_model | Default AI model for all tasks | Configurable |
 | ai_max_turns | Default max conversation turns per AI invocation | 50 |
 
@@ -145,7 +171,7 @@ Per-task-type overrides (spec, decompose, implement) are supported for ai_model 
 
 ## Data Model
 
-**Issues**: Each tracked GitHub issue persists its GitHub issue number, title, current state, spec PR number, final PR number, active worktree path, last processed comment ID, previous state (for retry), error message, and timestamps.
+**Issues**: Each tracked GitHub issue persists its GitHub issue number, title, current state, spec PR number, decomposition comment ID, last processed comment ID, previous state (for retry), error message, and timestamps.
 
 **Sub-issues**: Each sub-issue tracks its parent issue, GitHub issue number, title, sub-issue state (pending, working, pr_open, done, failed), PR number, worktree path, and AI session ID for resume.
 
@@ -171,7 +197,7 @@ Prompt construction and formatting are implementation details. The contract defi
 
 ## Observability
 
-- Structured logging with configurable verbosity levels
+- Structured logging at five levels (error, warn, info, debug, trace); default level: info
 - Per-issue token usage tracked in the usage log
 - `hammurabi status` provides a summary table of all tracked issues
 
@@ -179,8 +205,8 @@ Prompt construction and formatting are implementation details. The contract defi
 
 | Term | Definition |
 |------|------------|
-| Idea | A newly discovered GitHub issue, not yet analyzed |
-| Mission | An issue with an approved spec, ready for decomposition and implementation |
+| Discovered issue | A newly found GitHub issue, not yet analyzed (corresponds to Discovered state) |
+| Mission | An issue with an approved spec, ready for decomposition and implementation (enters Decomposing state) |
 | Sub-issue | A discrete task decomposed from a mission, implemented independently |
 | Approval gate | A point where progress blocks until a human explicitly approves |
 | Worktree isolation | Running each AI agent in its own git worktree to prevent interference |
