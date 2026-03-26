@@ -10,6 +10,12 @@ Automate the lifecycle of GitHub issues from idea to merged implementation while
 
 Repository maintainers who want AI-assisted development with mandatory human approval gates.
 
+## Prerequisites
+
+- GitHub personal access token with `repo` scope (or a GitHub App installation token with equivalent permissions)
+- `git` available on `PATH`
+- Network access to the GitHub API (`api.github.com`)
+
 ## Impacts
 
 - Eliminates manual orchestration of the issue-to-implementation workflow
@@ -144,8 +150,14 @@ All PRs target the repository's default branch. Each agent works on a branch nam
 | Worktree already exists | Daemon removes the stale worktree and recreates it |
 | Retry requested | `/retry` comment on the failed issue, or `hammurabi retry <number>`, resets to previous active state. `/retry` comments on non-Failed issues are ignored |
 | Stale blocking state | Issues in blocking states beyond configurable timeout (default: 7 days) receive a reminder comment; no auto-cancellation |
+| Concurrent daemon instance | Daemon writes a PID lock file on startup; a second instance exits with an error if the lock is held by a running process. Stale lock files (process no longer running) are cleaned up automatically |
+| Parent issue transitions to Failed | GitHub sub-issues already created are left open for manual triage; the daemon posts a comment on each noting the parent failure |
+| Agent output unparseable | If the daemon cannot parse the decomposition agent's structured output, the issue transitions to Failed with parse error details |
+| Branch already exists on remote | The daemon deletes and recreates the branch; `hammurabi/*` branches are daemon-managed |
 
 ## Configuration
+
+The daemon reads configuration from `hammurabi.toml`. Search order: current working directory first, then `~/.config/hammurabi/hammurabi.toml`. The first file found wins. Environment variables override individual parameters using the prefix `HAMMURABI_` (e.g., `HAMMURABI_POLL_INTERVAL=30`).
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
@@ -155,10 +167,20 @@ All PRs target the repository's default branch. Each agent works on a branch nam
 | tracking_label | GitHub label applied by daemon to tracked issues for visibility | hammurabi |
 | stale_timeout_days | Days before a blocking state gets a reminder | 7 |
 | api_retry_count | Consecutive GitHub API failures before transitioning to Failed | 3 |
-| ai_model | Default AI model for all tasks | Configurable |
+| ai_model | Default AI model for all tasks | Required |
 | ai_max_turns | Default max conversation turns per AI invocation | 50 |
+| github_token | GitHub authentication token | None (falls back to `GITHUB_TOKEN` env var) |
 
 Per-task-type overrides (spec, decompose, implement) are supported for ai_model and ai_max_turns.
+
+## Authentication
+
+The daemon authenticates with GitHub using a personal access token (or GitHub App installation token) with `repo` scope. The token is resolved in this order:
+
+1. `GITHUB_TOKEN` environment variable (takes precedence)
+2. `github_token` field in `hammurabi.toml`
+
+If neither is set, the daemon exits with an error on startup.
 
 ## CLI Commands
 
@@ -168,6 +190,8 @@ Per-task-type overrides (spec, decompose, implement) are supported for ai_model 
 | `hammurabi status` | Display all tracked issues with current state and last activity |
 | `hammurabi retry <issue_number>` | Reset a failed issue to its previous active state |
 | `hammurabi reset <issue_number>` | Reset an issue to Discovered state |
+
+`hammurabi status` displays a table with these columns: Issue #, Title (truncated to 50 characters), State, Age (time since discovery), and Last Activity (time since last state change). Rows are sorted by state priority: Failed first, then Active states, then Blocking states, then Done.
 
 ## Data Model
 
@@ -206,8 +230,7 @@ Prompt construction and formatting are implementation details. The contract defi
 | Term | Definition |
 |------|------------|
 | Discovered issue | A newly found GitHub issue, not yet analyzed (corresponds to Discovered state) |
-| Mission | An issue with an approved spec, ready for decomposition and implementation (enters Decomposing state) |
-| Sub-issue | A discrete task decomposed from a mission, implemented independently |
+| Sub-issue | A discrete task decomposed from an approved spec, implemented independently |
 | Approval gate | A point where progress blocks until a human explicitly approves |
 | Worktree isolation | Running each AI agent in its own git worktree to prevent interference |
 | Poll cycle | One iteration of the daemon's main loop: fetch, check, transition, sleep |
