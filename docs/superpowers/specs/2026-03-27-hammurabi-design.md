@@ -8,7 +8,7 @@ Every GitHub issue follows a single lifecycle:
 
 1. **Idea phase**: New issue is discovered, Claude analyzes it and drafts a `SPEC.md`, opens a PR for human review.
 2. **Mission phase**: Once the spec PR is merged, the issue becomes a mission. Claude decomposes it into sub-issues, waits for human approval, then spawns agents to implement each sub-issue.
-3. **Completion**: All sub-issue PRs merged, final integration PR opened for human approval.
+3. **Completion**: All sub-issue PRs merged by human, issue marked done.
 
 Human approval is required before any branch write or PR merge.
 
@@ -18,9 +18,9 @@ Each tracked issue moves through these states:
 
 ```
 Discovered → SpecDrafting → AwaitSpecApproval
-  → Decomposing → DecompProposed → AwaitDecompApproval
+  → Decomposing → AwaitDecompApproval
   → AgentsWorking → AwaitSubPRApprovals
-  → AwaitFinalApproval → Done
+  → Done
 ```
 
 Any active state can also transition to `Failed`. Failed issues can be retried via `/retry` comment or CLI command.
@@ -29,15 +29,13 @@ Any active state can also transition to `Failed`. Failed issues can be retried v
 
 | State | Type | Description |
 |-------|------|-------------|
-| `Discovered` | Active | New issue found, pending analysis and spec generation |
-| `SpecDrafting` | Active | Claude reads the issue, analyzes scope, and generates SPEC.md in one shot |
+| `Discovered` | Active | New issue found, pending spec generation |
+| `SpecDrafting` | Active | Claude analyzes the issue and generates SPEC.md |
 | `AwaitSpecApproval` | Blocking | Spec PR open, waiting for human to review and merge |
-| `Decomposing` | Active | Claude reads the merged spec and breaks the mission into sub-tasks |
-| `DecompProposed` | Active | Decomposition plan posted as an issue comment for review |
+| `Decomposing` | Active | Claude breaks the approved spec into sub-tasks and posts the plan as an issue comment |
 | `AwaitDecompApproval` | Blocking | Waiting for `/approve` comment; feedback re-triggers `Decomposing` |
-| `AgentsWorking` | Active | Claude agents working concurrently on sub-issues in isolated worktrees; as each finishes, its PR is opened |
-| `AwaitSubPRApprovals` | Blocking | All sub-issue PRs are open, waiting for human to review and merge each |
-| `AwaitFinalApproval` | Blocking | Final integration PR open, waiting for human merge |
+| `AgentsWorking` | Active | Claude agents working concurrently on sub-issues in isolated worktrees |
+| `AwaitSubPRApprovals` | Blocking | All sub-issue PRs open, waiting for human to review and merge each |
 | `Done` | Terminal | Issue fully resolved |
 | `Failed` | Terminal (retryable) | An error occurred; retryable via `/retry` |
 
@@ -45,7 +43,11 @@ Any active state can also transition to `Failed`. Failed issues can be retried v
 
 - **Active states**: The daemon performs work on the next poll cycle.
 - **Blocking states**: The daemon only checks for approval signals (PR merged, `/approve` comment).
-- **`AgentsWorking` → `AwaitSubPRApprovals`**: Transition fires when all sub-issues have an open PR (each agent opens its own PR upon completion).
+- **`Decomposing` → `AwaitDecompApproval`**: AI produces decomposition plan and daemon posts it as an issue comment.
+- **`AwaitDecompApproval` → `Decomposing`**: Feedback (non-`/approve` reply) received from an authorized approver.
+- **`AgentsWorking` → `AwaitSubPRApprovals`**: All sub-issue agents have finished and each has an open PR.
+- **`AgentsWorking` → `Failed`**: All agents have finished and at least one sub-issue failed.
+- **`AwaitSubPRApprovals` → `Done`**: All sub-issue PRs have been merged.
 - **Failed state**: Transitions back to the previous active state on `/retry`. The `previous_state` is stored in the `issues` table.
 
 ## Architecture
@@ -64,7 +66,7 @@ hammurabi/
 │   │   ├── spec_drafting.rs # Read issue + invoke Claude to produce SPEC.md
 │   │   ├── decomposing.rs   # Invoke Claude to break mission into sub-issues
 │   │   ├── agents_working.rs# Spawn Claude agents in worktrees per sub-issue
-│   │   └── finalize.rs      # Create final PR combining all work
+│   │   └── completion.rs    # Detect all sub-PRs merged, transition to Done
 │   ├── claude.rs            # Claude CLI subprocess management
 │   ├── worktree.rs          # Git worktree creation/cleanup
 │   └── approval.rs          # Check for PR approvals and /approve comments
@@ -167,7 +169,7 @@ The daemon maintains a bare clone of the target repo at `.hammurabi/repo/` (crea
 
 ### PR-Based Approvals (for code changes)
 
-Used for: spec PRs, sub-issue implementation PRs, final integration PR.
+Used for: spec PRs, sub-issue implementation PRs.
 
 - Daemon opens a PR with a descriptive body.
 - Daemon polls PR review status via GitHub API on each cycle.
@@ -200,7 +202,7 @@ Used for: sub-issue decomposition approval.
 | `github_issue_title` | TEXT | Issue title |
 | `state` | TEXT | Current state machine state |
 | `spec_pr_number` | INTEGER NULL | PR number for the spec |
-| `final_pr_number` | INTEGER NULL | PR number for final implementation |
+| `decomposition_comment_id` | INTEGER NULL | Comment ID of the posted decomposition plan |
 | `worktree_path` | TEXT NULL | Path to active worktree |
 | `last_comment_id` | INTEGER NULL | Last processed comment ID |
 | `previous_state` | TEXT NULL | State before entering Failed (for retry) |

@@ -14,7 +14,7 @@ Repository maintainers who want AI-assisted development with mandatory human app
 
 - GitHub personal access token with `repo` scope (or a GitHub App installation token with equivalent permissions)
 - `git` available on `PATH`
-- Network access to the GitHub API (`api.github.com`)
+- Network access to the GitHub API (`api.github.com`); GitHub Enterprise is not supported
 
 ## Impacts
 
@@ -45,6 +45,7 @@ Repository maintainers who want AI-assisted development with mandatory human app
 - Code review automation (humans review all PRs)
 - Project management beyond issue lifecycle tracking
 - Auto-merging PRs without human approval
+- Multi-repository monitoring (the daemon watches a single repository)
 
 ## User Journeys
 
@@ -124,13 +125,15 @@ Each tracked issue moves through these states:
 
 The daemon never force-merges a PR or auto-approves a plan.
 
-For comment-based approvals, any reply that is not `/approve` is treated as feedback. The daemon re-runs the planning step with the feedback appended and posts a revised proposal.
+Only users listed in the `approvers` configuration may trigger approval. `/approve` comments from users not in the list are ignored. PR merges by unauthorized users are accepted (GitHub's own permission model governs who can merge).
+
+For comment-based approvals, any reply from an authorized approver that is not `/approve` is treated as feedback. The daemon re-runs the planning step with the feedback appended and posts a revised proposal. If multiple feedback comments arrive while re-decomposition is in progress, the daemon uses only the most recent non-`/approve` comment from an authorized approver as feedback when the next decomposition cycle begins. Earlier unprocessed comments are skipped.
 
 If a PR associated with an approval gate is closed without merge, the issue transitions to Failed.
 
 ## Issue Discovery
 
-The daemon polls all open issues in the repository on each cycle. Any open issue not already tracked in SQLite is inserted as Discovered. The daemon applies the configured `tracking_label` to newly discovered issues for visibility; the label is not used as a discovery filter.
+The daemon polls all open issues in the repository on each cycle. Only issues carrying the configured `tracking_label` are tracked; issues without the label are ignored. Maintainers apply the label manually to issues they want the daemon to automate. When the daemon first discovers a labeled issue not yet in SQLite, it inserts it as Discovered.
 
 ## Branch Naming and Targets
 
@@ -145,15 +148,30 @@ All PRs target the repository's default branch. Each agent works on a branch nam
 | Partial agent failure | Remaining agents continue to completion; when all finish, if any sub-issue failed the parent transitions to Failed. `/retry` re-runs only the failed sub-issues |
 | GitHub API transient error (rate limit, network) | Daemon retries within the current poll cycle with exponential backoff; logs a warning |
 | GitHub API persistent error | After `api_retry_count` consecutive failures (default: 3), the affected issue transitions to Failed |
-| Daemon restart | Daemon resumes from SQLite state on startup; reconciles each tracked issue against GitHub (checks for PR merges, new comments, closed issues that occurred while stopped) |
+| Daemon restart | Daemon resumes from SQLite state on startup and reconciles each tracked issue against GitHub before the first poll cycle (see Restart Reconciliation below) |
 | Issue closed or deleted externally | Tracked issue transitions to Done; daemon posts no further comments |
 | Worktree already exists | Daemon removes the stale worktree and recreates it |
 | Retry requested | `/retry` comment on the failed issue, or `hammurabi retry <number>`, resets to previous active state. `/retry` comments on non-Failed issues are ignored |
 | Stale blocking state | Issues in blocking states beyond configurable timeout (default: 7 days) receive a reminder comment; no auto-cancellation |
-| Concurrent daemon instance | Daemon writes a PID lock file on startup; a second instance exits with an error if the lock is held by a running process. Stale lock files (process no longer running) are cleaned up automatically |
+| Concurrent daemon instance | Only one daemon instance may run per repository. If a second instance is started for the same repository, it exits with an error |
 | Parent issue transitions to Failed | GitHub sub-issues already created are left open for manual triage; the daemon posts a comment on each noting the parent failure |
 | Agent output unparseable | If the daemon cannot parse the decomposition agent's structured output, the issue transitions to Failed with parse error details |
 | Branch already exists on remote | The daemon deletes and recreates the branch; `hammurabi/*` branches are daemon-managed |
+
+### Restart Reconciliation
+
+On startup, the daemon reconciles each tracked issue against GitHub before the first poll cycle:
+
+| State Type | Reconciliation |
+|------------|----------------|
+| Active (Discovered, SpecDrafting, Decomposing, AgentsWorking) | Re-execute the transition on the next poll cycle; active transitions are idempotent |
+| AwaitSpecApproval | Check if the spec PR was merged while stopped; if merged, advance to Decomposing |
+| AwaitDecompApproval | Check for new comments since `last_comment_id`; process `/approve` or feedback accordingly |
+| AwaitSubPRApprovals | Check each sub-issue PR's merge status; advance to Done if all merged, or Failed if any closed without merge |
+| Failed | Remain in Failed; no automatic retry |
+| Done | No action |
+
+The daemon also detects issues closed or deleted externally during downtime and transitions them to Done.
 
 ## Configuration
 
@@ -164,11 +182,12 @@ The daemon reads configuration from `hammurabi.toml`. Search order: current work
 | repo | GitHub repository (owner/repo format) | Required |
 | poll_interval | Seconds between poll cycles | 60 |
 | max_concurrent_agents | Maximum parallel AI agent invocations | 3 |
-| tracking_label | GitHub label applied by daemon to tracked issues for visibility | hammurabi |
+| tracking_label | GitHub label that opts issues into daemon tracking; only labeled issues are processed | hammurabi |
 | stale_timeout_days | Days before a blocking state gets a reminder | 7 |
 | api_retry_count | Consecutive GitHub API failures before transitioning to Failed | 3 |
 | ai_model | Default AI model for all tasks | Required |
 | ai_max_turns | Default max conversation turns per AI invocation | 50 |
+| approvers | GitHub usernames authorized to approve (PR merges and `/approve` comments) | Required |
 | github_token | GitHub authentication token | None (falls back to `GITHUB_TOKEN` env var) |
 
 Per-task-type overrides (spec, decompose, implement) are supported for ai_model and ai_max_turns.
@@ -205,6 +224,29 @@ If neither is set, the daemon exits with an error on startup.
 
 Each AI agent task runs in an isolated git worktree branching from the target repository. After the agent completes, the daemon pushes the branch and opens a PR. Worktrees are cleaned up after PR merge or failure.
 
+## Sub-Issue State Machine
+
+Each sub-issue tracks its own state independently of the parent issue.
+
+| State | Description |
+|-------|-------------|
+| pending | Sub-issue created on GitHub, awaiting agent assignment |
+| working | AI agent actively implementing in an isolated worktree |
+| pr_open | Agent completed, branch pushed, PR open for human review |
+| done | PR merged by human |
+| failed | Agent error, no output, or PR closed without merge |
+
+### Sub-Issue Transition Rules
+
+| Transition | Condition |
+|------------|-----------|
+| pending → working | Daemon spawns an agent for this sub-issue |
+| working → pr_open | Agent completes successfully; daemon pushes branch and opens PR |
+| working → failed | Agent exits with error or produces no output |
+| pr_open → done | PR merged by human |
+| pr_open → failed | PR closed without merge |
+| failed → pending | `/retry` on parent issue resets failed sub-issues to pending |
+
 ## Agent Contracts
 
 The daemon places a task-specific context file in the worktree root before invoking the agent. Each task type defines what the agent receives and what it must produce.
@@ -212,7 +254,7 @@ The daemon places a task-specific context file in the worktree root before invok
 | Task | Agent Receives | Agent Produces |
 |------|---------------|----------------|
 | Spec drafting | Issue title, issue body, access to repository contents | SPEC.md committed to the worktree branch |
-| Decomposition | Merged SPEC.md content, original issue title and body, prior feedback (if re-running after feedback) | Ordered list of sub-issues, each with a title and scope description |
+| Decomposition | Merged SPEC.md content, original issue title and body, prior feedback (if re-running after feedback) | JSON array of objects, each with `title` (string) and `description` (string) fields, ordered by implementation sequence |
 | Implementation | Sub-issue title and body, parent SPEC.md content, access to repository contents | Code changes committed to the worktree branch |
 
 For decomposition, the daemon parses the agent's structured output into discrete sub-issues and posts them as a numbered list on the parent GitHub issue. Each entry includes a title and scope description sufficient for independent implementation.
