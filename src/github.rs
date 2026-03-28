@@ -66,6 +66,11 @@ pub trait GitHubClient: Send + Sync {
         path: &str,
     ) -> Result<String, HammurabiError>;
     async fn is_issue_open(&self, number: u64) -> Result<bool, HammurabiError>;
+    async fn get_label_adder(
+        &self,
+        issue_number: u64,
+        label: &str,
+    ) -> Result<Option<String>, HammurabiError>;
 }
 
 pub struct OctocrabClient {
@@ -447,6 +452,57 @@ impl GitHubClient for OctocrabClient {
         let issue = self.get_issue(number).await?;
         Ok(issue.state.contains("Open"))
     }
+
+    async fn get_label_adder(
+        &self,
+        issue_number: u64,
+        label: &str,
+    ) -> Result<Option<String>, HammurabiError> {
+        let owner = self.owner.clone();
+        let repo = self.repo.clone();
+        let client = self.client.clone();
+        let label = label.to_string();
+
+        self.retry(|| {
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let client = client.clone();
+            let label = label.clone();
+            async move {
+                let route = format!("/repos/{owner}/{repo}/issues/{issue_number}/events");
+                let events: Vec<serde_json::Value> = client
+                    .get(route, None::<&()>)
+                    .await
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "get events for #{}: {}",
+                            issue_number, e
+                        ))
+                    })?;
+
+                // Find the most recent "labeled" event matching our label
+                let mut adder: Option<String> = None;
+                for event in &events {
+                    if event.get("event").and_then(|v| v.as_str()) == Some("labeled") {
+                        if let Some(label_obj) = event.get("label") {
+                            if label_obj.get("name").and_then(|v| v.as_str()) == Some(&label) {
+                                if let Some(actor) = event.get("actor") {
+                                    if let Some(login) =
+                                        actor.get("login").and_then(|v| v.as_str())
+                                    {
+                                        adder = Some(login.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(adder)
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -463,6 +519,7 @@ pub mod mock {
         pub created_prs: Mutex<Vec<(String, String, String, String)>>,
         pub created_issues: Mutex<Vec<(String, String)>>,
         pub file_contents: Mutex<HashMap<(String, String), String>>,
+        pub label_adders: Mutex<HashMap<(u64, String), String>>,
         pub next_comment_id: Mutex<u64>,
         pub next_pr_number: Mutex<u64>,
         pub next_issue_number: Mutex<u64>,
@@ -479,6 +536,7 @@ pub mod mock {
                 created_prs: Mutex::new(Vec::new()),
                 created_issues: Mutex::new(Vec::new()),
                 file_contents: Mutex::new(HashMap::new()),
+                label_adders: Mutex::new(HashMap::new()),
                 next_comment_id: Mutex::new(1000),
                 next_pr_number: Mutex::new(100),
                 next_issue_number: Mutex::new(200),
@@ -511,6 +569,13 @@ pub mod mock {
                 .lock()
                 .unwrap()
                 .insert((branch.to_string(), path.to_string()), content.to_string());
+        }
+
+        pub fn set_label_adder(&self, issue_number: u64, label: &str, user: &str) {
+            self.label_adders
+                .lock()
+                .unwrap()
+                .insert((issue_number, label.to_string()), user.to_string());
         }
     }
 
@@ -635,6 +700,17 @@ pub mod mock {
             Ok(issues
                 .iter()
                 .any(|i| i.number == number && i.state.contains("Open")))
+        }
+
+        async fn get_label_adder(
+            &self,
+            issue_number: u64,
+            label: &str,
+        ) -> Result<Option<String>, HammurabiError> {
+            let adders = self.label_adders.lock().unwrap();
+            Ok(adders
+                .get(&(issue_number, label.to_string()))
+                .cloned())
         }
     }
 }

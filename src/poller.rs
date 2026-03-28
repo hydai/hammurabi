@@ -89,8 +89,41 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
 
     for gh_issue in &labeled_issues {
         if ctx.db.get_issue(gh_issue.number)?.is_none() {
-            ctx.db.insert_issue(gh_issue.number, &gh_issue.title)?;
-            tracing::info!(issue = gh_issue.number, "Discovered new issue");
+            // Verify the tracking label was applied by an authorized approver
+            match ctx
+                .github
+                .get_label_adder(gh_issue.number, &ctx.config.tracking_label)
+                .await
+            {
+                Ok(Some(ref adder)) if ctx.config.approvers.contains(adder) => {
+                    ctx.db.insert_issue(gh_issue.number, &gh_issue.title)?;
+                    tracing::info!(
+                        issue = gh_issue.number,
+                        labeled_by = %adder,
+                        "Discovered new issue"
+                    );
+                }
+                Ok(Some(adder)) => {
+                    tracing::warn!(
+                        issue = gh_issue.number,
+                        labeled_by = %adder,
+                        "Ignoring issue: label applied by unauthorized user"
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        issue = gh_issue.number,
+                        "Ignoring issue: could not determine who applied the label"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        issue = gh_issue.number,
+                        "Skipping issue: label check failed: {}",
+                        e
+                    );
+                }
+            }
         }
     }
 
