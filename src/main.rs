@@ -1,6 +1,7 @@
 mod config;
 mod db;
 mod error;
+mod github;
 mod models;
 mod state_machine;
 
