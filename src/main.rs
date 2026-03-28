@@ -1,3 +1,4 @@
+mod approval;
 mod claude;
 mod config;
 mod db;
