@@ -414,6 +414,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "libc",
  "octocrab",
  "rusqlite",
  "serde",
