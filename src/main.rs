@@ -1,3 +1,4 @@
+mod claude;
 mod config;
 mod db;
 mod error;
