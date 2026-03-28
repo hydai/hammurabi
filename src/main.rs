@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod error;
 mod models;
+mod state_machine;
 
 use clap::{Parser, Subcommand};
 
