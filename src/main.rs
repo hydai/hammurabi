@@ -5,7 +5,9 @@ mod db;
 mod error;
 mod github;
 mod models;
+mod prompts;
 mod state_machine;
+mod transitions;
 mod worktree;
 
 use clap::{Parser, Subcommand};

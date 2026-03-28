@@ -1,10 +1,11 @@
 use rusqlite::{params, Connection, Result as SqlResult};
+use std::sync::Mutex;
 
 use crate::error::HammurabiError;
 use crate::models::{IssueState, SubIssue, SubIssueState, TrackedIssue, UsageEntry};
 
 pub struct Database {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl Database {
@@ -19,13 +20,19 @@ impl Database {
         conn.execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
 
-        let db = Database { conn };
+        let db = Database {
+            conn: Mutex::new(conn),
+        };
         db.run_migrations()?;
         Ok(db)
     }
 
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap()
+    }
+
     fn run_migrations(&self) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS issues (
                     id INTEGER PRIMARY KEY,
@@ -76,21 +83,21 @@ impl Database {
         github_issue_number: u64,
         title: &str,
     ) -> Result<i64, HammurabiError> {
-        self.conn
-            .execute(
+        let conn = self.conn();
+        conn.execute(
                 "INSERT OR IGNORE INTO issues (github_issue_number, github_issue_title) VALUES (?1, ?2)",
                 params![github_issue_number as i64, title],
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn get_issue(
         &self,
         github_issue_number: u64,
     ) -> Result<Option<TrackedIssue>, HammurabiError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_pr_number,
                         decomposition_comment_id, last_comment_id, previous_state,
@@ -113,8 +120,8 @@ impl Database {
     }
 
     pub fn get_all_issues(&self) -> Result<Vec<TrackedIssue>, HammurabiError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_pr_number,
                         decomposition_comment_id, last_comment_id, previous_state,
@@ -136,8 +143,8 @@ impl Database {
         &self,
         state: IssueState,
     ) -> Result<Vec<TrackedIssue>, HammurabiError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_pr_number,
                         decomposition_comment_id, last_comment_id, previous_state,
@@ -163,7 +170,7 @@ impl Database {
         new_state: IssueState,
         previous_state: Option<IssueState>,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE issues SET state = ?1, previous_state = ?2, updated_at = datetime('now') WHERE id = ?3",
                 params![
@@ -181,7 +188,7 @@ impl Database {
         id: i64,
         error_message: &str,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE issues SET error_message = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![error_message, id],
@@ -195,7 +202,7 @@ impl Database {
         id: i64,
         pr_number: u64,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE issues SET spec_pr_number = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![pr_number as i64, id],
@@ -209,7 +216,7 @@ impl Database {
         id: i64,
         comment_id: u64,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE issues SET decomposition_comment_id = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![comment_id as i64, id],
@@ -223,7 +230,7 @@ impl Database {
         id: i64,
         comment_id: u64,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE issues SET last_comment_id = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![comment_id as i64, id],
@@ -237,7 +244,7 @@ impl Database {
         id: i64,
         path: Option<&str>,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE issues SET worktree_path = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![path, id],
@@ -254,18 +261,18 @@ impl Database {
         title: &str,
         description: &str,
     ) -> Result<i64, HammurabiError> {
-        self.conn
-            .execute(
+        let conn = self.conn();
+        conn.execute(
                 "INSERT INTO sub_issues (parent_issue_id, title, description) VALUES (?1, ?2, ?3)",
                 params![parent_issue_id, title, description],
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn get_sub_issues(&self, parent_issue_id: i64) -> Result<Vec<SubIssue>, HammurabiError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT id, parent_issue_id, github_issue_number, title, description,
                         state, pr_number, worktree_path, session_id
@@ -289,7 +296,7 @@ impl Database {
         id: i64,
         state: SubIssueState,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE sub_issues SET state = ?1 WHERE id = ?2",
                 params![state.to_string(), id],
@@ -303,7 +310,7 @@ impl Database {
         id: i64,
         github_issue_number: u64,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE sub_issues SET github_issue_number = ?1 WHERE id = ?2",
                 params![github_issue_number as i64, id],
@@ -317,7 +324,7 @@ impl Database {
         id: i64,
         pr_number: u64,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE sub_issues SET pr_number = ?1 WHERE id = ?2",
                 params![pr_number as i64, id],
@@ -331,7 +338,7 @@ impl Database {
         id: i64,
         path: Option<&str>,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE sub_issues SET worktree_path = ?1 WHERE id = ?2",
                 params![path, id],
@@ -345,7 +352,7 @@ impl Database {
         id: i64,
         session_id: Option<&str>,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE sub_issues SET session_id = ?1 WHERE id = ?2",
                 params![session_id, id],
@@ -355,7 +362,7 @@ impl Database {
     }
 
     pub fn reset_failed_sub_issues(&self, parent_issue_id: i64) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "UPDATE sub_issues SET state = 'pending', worktree_path = NULL, session_id = NULL WHERE parent_issue_id = ?1 AND state = 'failed'",
                 params![parent_issue_id],
@@ -375,7 +382,7 @@ impl Database {
         output_tokens: u64,
         model: &str,
     ) -> Result<(), HammurabiError> {
-        self.conn
+        self.conn()
             .execute(
                 "INSERT INTO usage_log (issue_id, sub_issue_id, transition, input_tokens, output_tokens, model)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -393,8 +400,8 @@ impl Database {
     }
 
     pub fn get_usage_by_issue(&self, issue_id: i64) -> Result<Vec<UsageEntry>, HammurabiError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT id, issue_id, sub_issue_id, transition, input_tokens, output_tokens, model, timestamp
                  FROM usage_log WHERE issue_id = ?1 ORDER BY timestamp",
