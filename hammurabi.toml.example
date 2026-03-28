@@ -1,0 +1,46 @@
+# Hammurabi configuration
+# Search order: ./hammurabi.toml, then ~/.config/hammurabi/hammurabi.toml
+# Environment variables override with HAMMURABI_ prefix (e.g., HAMMURABI_POLL_INTERVAL=30)
+
+# GitHub repository to monitor (required)
+repo = "owner/repo"
+
+# Seconds between poll cycles (default: 60)
+# poll_interval = 60
+
+# Maximum parallel AI agent invocations (default: 3)
+# max_concurrent_agents = 3
+
+# GitHub label that opts issues into daemon tracking (default: "hammurabi")
+# tracking_label = "hammurabi"
+
+# Days before a blocking state gets a reminder comment (default: 7)
+# stale_timeout_days = 7
+
+# Consecutive GitHub API failures before transitioning to Failed (default: 3)
+# api_retry_count = 3
+
+# Default AI model for all tasks (required)
+ai_model = "claude-sonnet-4-6"
+
+# Default max conversation turns per AI invocation (default: 50)
+# ai_max_turns = 50
+
+# GitHub usernames authorized to approve (required)
+approvers = ["your-github-username"]
+
+# GitHub authentication token (falls back to GITHUB_TOKEN env var)
+# github_token = "ghp_..."
+
+# Per-task AI overrides (optional)
+# [spec]
+# ai_model = "claude-opus-4-6"
+# ai_max_turns = 100
+
+# [decompose]
+# ai_model = "claude-sonnet-4-6"
+# ai_max_turns = 30
+
+# [implement]
+# ai_model = "claude-sonnet-4-6"
+# ai_max_turns = 50
