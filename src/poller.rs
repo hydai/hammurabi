@@ -37,13 +37,16 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
         config.api_retry_count,
     )?);
 
-    // Initialize worktree manager
-    let worktree_mgr = Arc::new(GitWorktreeManager::new(base_dir.clone()));
+    // Initialize worktree manager (token stored on struct for GIT_ASKPASS auth)
+    let worktree_mgr = Arc::new(GitWorktreeManager::new(
+        base_dir.clone(),
+        config.github_token.clone(),
+    ));
 
-    // Ensure bare clone
+    // Ensure bare clone (token not embedded in URL — uses GIT_ASKPASS instead)
     let repo_url = format!(
-        "https://x-access-token:{}@github.com/{}.git",
-        config.github_token, config.repo
+        "https://x-access-token@github.com/{}.git",
+        config.repo
     );
     worktree_mgr.ensure_bare_clone(&repo_url).await?;
     tracing::info!("Bare clone ready");

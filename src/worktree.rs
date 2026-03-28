@@ -23,16 +23,18 @@ pub struct GitWorktreeManager {
     base_dir: PathBuf,
     bare_clone_path: PathBuf,
     worktrees_dir: PathBuf,
+    github_token: String,
 }
 
 impl GitWorktreeManager {
-    pub fn new(base_dir: PathBuf) -> Self {
+    pub fn new(base_dir: PathBuf, github_token: String) -> Self {
         let bare_clone_path = base_dir.join("repo");
         let worktrees_dir = base_dir.join("worktrees");
         Self {
             base_dir,
             bare_clone_path,
             worktrees_dir,
+            github_token,
         }
     }
 
@@ -67,6 +69,52 @@ impl GitWorktreeManager {
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
+
+    /// Run a git command with GIT_ASKPASS-based authentication.
+    /// This avoids embedding the token in command-line arguments or URLs.
+    async fn run_git_authenticated(
+        &self,
+        args: &[&str],
+        cwd: &Path,
+    ) -> Result<String, HammurabiError> {
+        let askpass_path = self.base_dir.join(".git-askpass.sh");
+        let script_content = format!("#!/bin/sh\necho '{}'", self.github_token);
+        tokio::fs::write(&askpass_path, &script_content)
+            .await
+            .map_err(|e| HammurabiError::Worktree(format!("write askpass script: {}", e)))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o700);
+            tokio::fs::set_permissions(&askpass_path, perms)
+                .await
+                .map_err(|e| HammurabiError::Worktree(format!("chmod askpass: {}", e)))?;
+        }
+
+        let output = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_ASKPASS", &askpass_path)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .await
+            .map_err(|e| HammurabiError::Worktree(format!("failed to run git: {}", e)))?;
+
+        // Clean up askpass script
+        let _ = tokio::fs::remove_file(&askpass_path).await;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(HammurabiError::Worktree(format!(
+                "git {} failed: {}",
+                args.join(" "),
+                stderr
+            )));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
 }
 
 #[async_trait]
@@ -80,27 +128,22 @@ impl WorktreeManager for GitWorktreeManager {
             return Ok(self.bare_clone_path.clone());
         }
 
-        let output = tokio::process::Command::new("git")
-            .args(["clone", "--bare", repo_url])
-            .arg(&self.bare_clone_path)
-            .output()
-            .await
-            .map_err(|e| HammurabiError::Worktree(format!("git clone --bare: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(HammurabiError::Worktree(format!(
-                "git clone --bare failed: {}",
-                stderr
-            )));
-        }
+        let clone_dest = self.bare_clone_path.to_str().unwrap_or("repo");
+        self.run_git_authenticated(
+            &["clone", "--bare", repo_url, clone_dest],
+            &self.base_dir,
+        )
+        .await?;
 
         Ok(self.bare_clone_path.clone())
     }
 
     async fn fetch_origin(&self) -> Result<(), HammurabiError> {
-        self.run_git(&["fetch", "origin", "--prune"], &self.bare_clone_path)
-            .await?;
+        self.run_git_authenticated(
+            &["fetch", "origin", "--prune"],
+            &self.bare_clone_path,
+        )
+        .await?;
         Ok(())
     }
 
@@ -189,7 +232,7 @@ impl WorktreeManager for GitWorktreeManager {
         // Delete remote branch first if it exists (daemon-managed branches)
         let _ = self.delete_remote_branch(branch_name).await;
 
-        self.run_git(
+        self.run_git_authenticated(
             &["push", "origin", branch_name],
             &self.bare_clone_path,
         )
@@ -200,7 +243,10 @@ impl WorktreeManager for GitWorktreeManager {
     async fn delete_remote_branch(&self, branch_name: &str) -> Result<(), HammurabiError> {
         let delete_ref = format!(":{}", branch_name);
         let _ = self
-            .run_git(&["push", "origin", &delete_ref], &self.bare_clone_path)
+            .run_git_authenticated(
+                &["push", "origin", &delete_ref],
+                &self.bare_clone_path,
+            )
             .await;
         Ok(())
     }
