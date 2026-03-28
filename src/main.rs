@@ -5,6 +5,7 @@ mod error;
 mod github;
 mod models;
 mod state_machine;
+mod worktree;
 
 use clap::{Parser, Subcommand};
 
