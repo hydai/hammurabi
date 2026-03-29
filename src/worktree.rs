@@ -121,6 +121,7 @@ impl GitWorktreeManager {
         let output = tokio::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
+            .env("LC_ALL", "C")
             .output()
             .await
             .map_err(|e| HammurabiError::Worktree(format!("failed to run git: {}", e)))?;
@@ -165,6 +166,7 @@ impl GitWorktreeManager {
         let output = tokio::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
+            .env("LC_ALL", "C")
             .env("GIT_ASKPASS", &askpass_path)
             .env("GIT_TERMINAL_PROMPT", "0")
             .output()
