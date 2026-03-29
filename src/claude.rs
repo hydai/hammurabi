@@ -45,6 +45,7 @@ impl AiAgent for ClaudeCliAgent {
         }
 
         let output = tokio::process::Command::new("claude")
+            .current_dir(&invocation.worktree_path)
             .arg("--print")
             .arg("--verbose")
             .arg("--output-format")
@@ -55,8 +56,6 @@ impl AiAgent for ClaudeCliAgent {
             .arg(invocation.max_turns.to_string())
             .arg("--effort")
             .arg(&invocation.effort)
-            .arg("--add-dir")
-            .arg(&invocation.worktree_path)
             .arg("-p")
             .arg(&invocation.prompt)
             .output()
