@@ -93,6 +93,16 @@ impl Database {
             );
         }
 
+        // Add retry_count column if missing (incremental migration)
+        let has_retry_count = conn
+            .prepare("SELECT retry_count FROM issues LIMIT 0")
+            .is_ok();
+        if !has_retry_count {
+            let _ = conn.execute_batch(
+                "ALTER TABLE issues ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;",
+            );
+        }
+
         // Create tables if they don't exist (fresh install or post-migration)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS issues (
@@ -108,6 +118,7 @@ impl Database {
                 previous_state TEXT,
                 error_message TEXT,
                 worktree_path TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -153,7 +164,8 @@ impl Database {
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, created_at, updated_at
+                        previous_state, error_message, worktree_path, retry_count,
+                        created_at, updated_at
                  FROM issues WHERE github_issue_number = ?1",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -177,7 +189,8 @@ impl Database {
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, created_at, updated_at
+                        previous_state, error_message, worktree_path, retry_count,
+                        created_at, updated_at
                  FROM issues",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -200,7 +213,8 @@ impl Database {
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, created_at, updated_at
+                        previous_state, error_message, worktree_path, retry_count,
+                        created_at, updated_at
                  FROM issues WHERE state = ?1",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -319,6 +333,34 @@ impl Database {
         Ok(())
     }
 
+    pub fn increment_retry_count(&self, id: i64) -> Result<u32, HammurabiError> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE issues SET retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| HammurabiError::Database(e.to_string()))?;
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT retry_count FROM issues WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        Ok(count as u32)
+    }
+
+    pub fn reset_retry_count(&self, id: i64) -> Result<(), HammurabiError> {
+        self.conn()
+            .execute(
+                "UPDATE issues SET retry_count = 0, updated_at = datetime('now') WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_issue_worktree(
         &self,
         id: i64,
@@ -412,8 +454,9 @@ fn row_to_tracked_issue(row: &rusqlite::Row) -> TrackedIssue {
             .and_then(|s| s.parse().ok()),
         error_message: row.get(10).unwrap(),
         worktree_path: row.get(11).unwrap(),
-        created_at: row.get(12).unwrap(),
-        updated_at: row.get(13).unwrap(),
+        retry_count: row.get::<_, i64>(12).unwrap_or(0) as u32,
+        created_at: row.get(13).unwrap(),
+        updated_at: row.get(14).unwrap(),
     }
 }
 
@@ -614,5 +657,43 @@ mod tests {
         let updated = db.get_issue(1).unwrap().unwrap();
         assert_eq!(updated.spec_comment_id, Some(555));
         assert_eq!(updated.last_comment_id, Some(600));
+    }
+
+    #[test]
+    fn test_retry_count_default_zero() {
+        let db = test_db();
+        db.insert_issue(1, "Issue 1").unwrap();
+        let issue = db.get_issue(1).unwrap().unwrap();
+        assert_eq!(issue.retry_count, 0);
+    }
+
+    #[test]
+    fn test_increment_retry_count() {
+        let db = test_db();
+        db.insert_issue(1, "Issue 1").unwrap();
+        let issue = db.get_issue(1).unwrap().unwrap();
+
+        let count = db.increment_retry_count(issue.id).unwrap();
+        assert_eq!(count, 1);
+
+        let count = db.increment_retry_count(issue.id).unwrap();
+        assert_eq!(count, 2);
+
+        let updated = db.get_issue(1).unwrap().unwrap();
+        assert_eq!(updated.retry_count, 2);
+    }
+
+    #[test]
+    fn test_reset_retry_count() {
+        let db = test_db();
+        db.insert_issue(1, "Issue 1").unwrap();
+        let issue = db.get_issue(1).unwrap().unwrap();
+
+        db.increment_retry_count(issue.id).unwrap();
+        db.increment_retry_count(issue.id).unwrap();
+        db.reset_retry_count(issue.id).unwrap();
+
+        let updated = db.get_issue(1).unwrap().unwrap();
+        assert_eq!(updated.retry_count, 0);
     }
 }

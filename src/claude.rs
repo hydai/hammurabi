@@ -1,5 +1,8 @@
 use async_trait::async_trait;
 use std::path::Path;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::time::{timeout, Duration, Instant};
 
 use crate::error::HammurabiError;
 
@@ -10,6 +13,8 @@ pub struct AiInvocation {
     pub effort: String,
     pub worktree_path: String,
     pub prompt: String,
+    pub timeout_secs: u64,
+    pub stall_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +49,7 @@ impl AiAgent for ClaudeCliAgent {
             )));
         }
 
-        let output = tokio::process::Command::new("claude")
+        let mut child = tokio::process::Command::new("claude")
             .current_dir(&invocation.worktree_path)
             .arg("--print")
             .arg("--dangerously-skip-permissions")
@@ -59,20 +64,86 @@ impl AiAgent for ClaudeCliAgent {
             .arg(&invocation.effort)
             .arg("-p")
             .arg(&invocation.prompt)
-            .output()
-            .await
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .map_err(|e| HammurabiError::Ai(format!("failed to spawn claude: {}", e)))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = child.stdout.take().ok_or_else(|| {
+            HammurabiError::Ai("failed to capture stdout".to_string())
+        })?;
+
+        let overall_deadline = Instant::now() + Duration::from_secs(invocation.timeout_secs);
+        let stall_duration = Duration::from_secs(invocation.stall_timeout_secs);
+        let mut reader = BufReader::new(stdout).lines();
+        let mut collected_lines = Vec::new();
+
+        loop {
+            // Check overall timeout
+            let remaining = overall_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let _ = child.kill().await;
+                return Err(HammurabiError::AiTimeout(format!(
+                    "agent exceeded total timeout of {}s",
+                    invocation.timeout_secs
+                )));
+            }
+
+            // Use the smaller of stall timeout and remaining overall time
+            let line_timeout = stall_duration.min(remaining);
+
+            match timeout(line_timeout, reader.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    collected_lines.push(line);
+                }
+                Ok(Ok(None)) => {
+                    // EOF — process finished writing stdout
+                    break;
+                }
+                Ok(Err(e)) => {
+                    let _ = child.kill().await;
+                    return Err(HammurabiError::Ai(format!(
+                        "error reading claude output: {}", e
+                    )));
+                }
+                Err(_) => {
+                    // Timeout — either stall or overall
+                    let _ = child.kill().await;
+                    if Instant::now() >= overall_deadline {
+                        return Err(HammurabiError::AiTimeout(format!(
+                            "agent exceeded total timeout of {}s",
+                            invocation.timeout_secs
+                        )));
+                    } else {
+                        return Err(HammurabiError::AiTimeout(format!(
+                            "agent stalled — no output for {}s",
+                            invocation.stall_timeout_secs
+                        )));
+                    }
+                }
+            }
+        }
+
+        let status = child.wait().await
+            .map_err(|e| HammurabiError::Ai(format!("failed to wait for claude: {}", e)))?;
+
+        if !status.success() {
+            // Collect stderr for error reporting
+            let stderr_output = if let Some(mut stderr) = child.stderr.take() {
+                let mut buf = String::new();
+                let _ = tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut buf).await;
+                buf
+            } else {
+                String::new()
+            };
             return Err(HammurabiError::Ai(format!(
                 "claude exited with status {}: {}",
-                output.status, stderr
+                status, stderr_output
             )));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_stream_json(&stdout)
+        let full_output = collected_lines.join("\n");
+        parse_stream_json(&full_output)
     }
 }
 
@@ -314,6 +385,8 @@ mod tests {
                 effort: "high".to_string(),
                 worktree_path: "/tmp/test".to_string(),
                 prompt: "Generate a spec for this issue".to_string(),
+                timeout_secs: 3600,
+                stall_timeout_secs: 300,
             })
             .await
             .unwrap();
@@ -332,6 +405,8 @@ mod tests {
                 effort: "high".to_string(),
                 worktree_path: "/tmp/test".to_string(),
                 prompt: "something".to_string(),
+                timeout_secs: 3600,
+                stall_timeout_secs: 300,
             })
             .await;
 
@@ -355,6 +430,8 @@ mod tests {
                 effort: "high".to_string(),
                 worktree_path: "/tmp/test".to_string(),
                 prompt: "anything".to_string(),
+                timeout_secs: 3600,
+                stall_timeout_secs: 300,
             })
             .await
             .unwrap();

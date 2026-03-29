@@ -14,6 +14,9 @@ pub enum HammurabiError {
     #[error("AI agent error: {0}")]
     Ai(String),
 
+    #[error("AI agent timeout: {0}")]
+    AiTimeout(String),
+
     #[error("worktree error: {0}")]
     Worktree(String),
 

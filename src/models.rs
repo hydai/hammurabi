@@ -86,6 +86,7 @@ pub struct TrackedIssue {
     pub previous_state: Option<IssueState>,
     pub error_message: Option<String>,
     pub worktree_path: Option<String>,
+    pub retry_count: u32,
     pub created_at: String,
     pub updated_at: String,
 }

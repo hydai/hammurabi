@@ -25,6 +25,8 @@ pub struct AiTaskConfig {
     pub ai_model: Option<String>,
     pub ai_max_turns: Option<u32>,
     pub ai_effort: Option<String>,
+    pub ai_timeout_secs: Option<u64>,
+    pub ai_stall_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +39,9 @@ struct RawConfig {
     ai_model: Option<String>,
     ai_max_turns: Option<u32>,
     ai_effort: Option<String>,
+    ai_timeout_secs: Option<u64>,
+    ai_stall_timeout_secs: Option<u64>,
+    ai_max_retries: Option<u32>,
     approvers: Option<Vec<String>>,
     github_token: Option<String>,
     github_app: Option<RawGitHubAppConfig>,
@@ -56,6 +61,9 @@ pub struct Config {
     pub ai_model: String,
     pub ai_max_turns: u32,
     pub ai_effort: String,
+    pub ai_timeout_secs: u64,
+    pub ai_stall_timeout_secs: u64,
+    pub ai_max_retries: u32,
     pub approvers: Vec<String>,
     pub github_auth: GitHubAuth,
     pub spec: Option<AiTaskConfig>,
@@ -91,6 +99,24 @@ impl Config {
             _ => None,
         };
         override_effort.unwrap_or(&self.ai_effort)
+    }
+
+    pub fn ai_timeout_for_task(&self, task: &str) -> u64 {
+        let override_val = match task {
+            "spec" => self.spec.as_ref().and_then(|c| c.ai_timeout_secs),
+            "implement" => self.implement.as_ref().and_then(|c| c.ai_timeout_secs),
+            _ => None,
+        };
+        override_val.unwrap_or(self.ai_timeout_secs)
+    }
+
+    pub fn ai_stall_timeout_for_task(&self, task: &str) -> u64 {
+        let override_val = match task {
+            "spec" => self.spec.as_ref().and_then(|c| c.ai_stall_timeout_secs),
+            "implement" => self.implement.as_ref().and_then(|c| c.ai_stall_timeout_secs),
+            _ => None,
+        };
+        override_val.unwrap_or(self.ai_stall_timeout_secs)
     }
 }
 
@@ -157,6 +183,9 @@ pub fn load() -> Result<Config, HammurabiError> {
             ai_model: None,
             ai_max_turns: None,
             ai_effort: None,
+            ai_timeout_secs: None,
+            ai_stall_timeout_secs: None,
+            ai_max_retries: None,
             approvers: None,
             github_token: None,
             github_app: None,
@@ -195,6 +224,15 @@ pub fn load() -> Result<Config, HammurabiError> {
         .ai_effort
         .unwrap_or_else(|| "high".to_string());
     env_override_string("ai_effort", &mut ai_effort);
+
+    let mut ai_timeout_secs = raw.ai_timeout_secs.unwrap_or(3600);
+    env_override("ai_timeout_secs", &mut ai_timeout_secs);
+
+    let mut ai_stall_timeout_secs = raw.ai_stall_timeout_secs.unwrap_or(300);
+    env_override("ai_stall_timeout_secs", &mut ai_stall_timeout_secs);
+
+    let mut ai_max_retries = raw.ai_max_retries.unwrap_or(2);
+    env_override("ai_max_retries", &mut ai_max_retries);
 
     let approvers = raw.approvers.unwrap_or_default();
 
@@ -294,6 +332,9 @@ pub fn load() -> Result<Config, HammurabiError> {
         ai_model,
         ai_max_turns,
         ai_effort,
+        ai_timeout_secs,
+        ai_stall_timeout_secs,
+        ai_max_retries,
         approvers,
         github_auth,
         spec: raw.spec,
@@ -343,6 +384,9 @@ mod tests {
             ai_model,
             ai_max_turns: raw.ai_max_turns.unwrap_or(50),
             ai_effort: raw.ai_effort.unwrap_or_else(|| "high".to_string()),
+            ai_timeout_secs: raw.ai_timeout_secs.unwrap_or(3600),
+            ai_stall_timeout_secs: raw.ai_stall_timeout_secs.unwrap_or(300),
+            ai_max_retries: raw.ai_max_retries.unwrap_or(2),
             approvers,
             github_auth,
             spec: raw.spec,
@@ -452,6 +496,62 @@ mod tests {
         assert_eq!(config.api_retry_count, 5);
         assert_eq!(config.ai_max_turns, 100);
         assert_eq!(config.approvers.len(), 2);
+    }
+
+    #[test]
+    fn test_timeout_defaults() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "claude-sonnet-4-6"
+            approvers = ["alice"]
+            github_token = "ghp_test"
+        "#;
+        let config = parse_raw(toml).unwrap();
+        assert_eq!(config.ai_timeout_secs, 3600);
+        assert_eq!(config.ai_stall_timeout_secs, 300);
+        assert_eq!(config.ai_max_retries, 2);
+    }
+
+    #[test]
+    fn test_timeout_custom_values() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "claude-sonnet-4-6"
+            ai_timeout_secs = 7200
+            ai_stall_timeout_secs = 600
+            ai_max_retries = 5
+            approvers = ["alice"]
+            github_token = "ghp_test"
+        "#;
+        let config = parse_raw(toml).unwrap();
+        assert_eq!(config.ai_timeout_secs, 7200);
+        assert_eq!(config.ai_stall_timeout_secs, 600);
+        assert_eq!(config.ai_max_retries, 5);
+    }
+
+    #[test]
+    fn test_timeout_per_task_overrides() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "claude-sonnet-4-6"
+            ai_timeout_secs = 3600
+            ai_stall_timeout_secs = 300
+            approvers = ["alice"]
+            github_token = "ghp_test"
+
+            [spec]
+            ai_timeout_secs = 1800
+            ai_stall_timeout_secs = 120
+
+            [implement]
+            ai_timeout_secs = 7200
+        "#;
+        let config = parse_raw(toml).unwrap();
+        assert_eq!(config.ai_timeout_for_task("spec"), 1800);
+        assert_eq!(config.ai_stall_timeout_for_task("spec"), 120);
+        assert_eq!(config.ai_timeout_for_task("implement"), 7200);
+        assert_eq!(config.ai_stall_timeout_for_task("implement"), 300); // falls back to global
+        assert_eq!(config.ai_timeout_for_task("other"), 3600); // falls back to global
     }
 
     #[test]

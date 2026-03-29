@@ -84,6 +84,8 @@ pub async fn execute(
             effort,
             worktree_path: worktree_str.clone(),
             prompt,
+            timeout_secs: ctx.config.ai_timeout_for_task("implement"),
+            stall_timeout_secs: ctx.config.ai_stall_timeout_for_task("implement"),
         })
         .await?;
 
@@ -208,6 +210,9 @@ mod tests {
             ai_model: "test-model".to_string(),
             ai_max_turns: 50,
             ai_effort: "high".to_string(),
+            ai_timeout_secs: 3600,
+            ai_stall_timeout_secs: 300,
+            ai_max_retries: 2,
             approvers: vec!["alice".to_string()],
             github_auth: crate::config::GitHubAuth::Token("token".to_string()),
             spec: None,

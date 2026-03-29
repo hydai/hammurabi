@@ -189,27 +189,53 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     // Process each tracked issue
     let all_tracked = ctx.db.get_all_issues()?;
     for issue in &all_tracked {
-        if let Err(e) = process_issue(ctx, issue).await {
-            tracing::error!(
-                issue = issue.github_issue_number,
-                "Error processing issue: {}",
-                e
-            );
-            // Transition to Failed on error for active states
-            if issue.state.is_active() {
-                let _ = ctx
-                    .db
-                    .update_issue_state(issue.id, IssueState::Failed, Some(issue.state));
-                let _ = ctx
-                    .db
-                    .update_issue_error(issue.id, &e.to_string());
-                let _ = ctx
-                    .github
-                    .post_issue_comment(
-                        issue.github_issue_number,
-                        &format!("Error during {}: {}", issue.state, e),
-                    )
-                    .await;
+        match process_issue(ctx, issue).await {
+            Ok(()) => {
+                // Reset retry count on successful processing
+                if issue.retry_count > 0 {
+                    let _ = ctx.db.reset_retry_count(issue.id);
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    issue = issue.github_issue_number,
+                    "Error processing issue: {}",
+                    e
+                );
+                // For active states, check if we should retry or fail
+                if issue.state.is_active() {
+                    let max_retries = ctx.config.ai_max_retries;
+                    if issue.retry_count < max_retries {
+                        let new_count = ctx.db.increment_retry_count(issue.id)
+                            .unwrap_or(issue.retry_count + 1);
+                        tracing::warn!(
+                            issue = issue.github_issue_number,
+                            retry_count = new_count,
+                            max_retries = max_retries,
+                            "Will retry on next poll cycle (attempt {}/{})",
+                            new_count, max_retries
+                        );
+                        let _ = ctx.db.update_issue_error(issue.id, &e.to_string());
+                    } else {
+                        // Exhausted retries — transition to Failed
+                        let _ = ctx.db.update_issue_state(
+                            issue.id,
+                            IssueState::Failed,
+                            Some(issue.state),
+                        );
+                        let _ = ctx.db.update_issue_error(issue.id, &e.to_string());
+                        let _ = ctx
+                            .github
+                            .post_issue_comment(
+                                issue.github_issue_number,
+                                &format!(
+                                    "Error during {} (after {} retries): {}",
+                                    issue.state, max_retries, e
+                                ),
+                            )
+                            .await;
+                    }
+                }
             }
         }
     }
@@ -344,6 +370,7 @@ async fn process_issue(
                 if let Some(prev) = issue.previous_state {
                     ctx.db
                         .update_issue_state(issue.id, prev, None)?;
+                    ctx.db.reset_retry_count(issue.id)?;
                     ctx.github
                         .post_issue_comment(
                             issue.github_issue_number,
