@@ -36,6 +36,15 @@ approvers = ["your-github-username"]
 # GitHub authentication token (falls back to GITHUB_TOKEN env var)
 # github_token = "ghp_..."
 
+# GitHub App authentication (alternative to github_token)
+# Acts as a bot with [bot] badge on PRs and comments.
+# Do NOT set both github_token and [github_app].
+#
+# [github_app]
+# app_id = 123456
+# private_key_path = "/path/to/your-app.private-key.pem"
+# installation_id = 78901234
+
 # Per-task AI overrides (optional)
 # [spec]
 # ai_model = "claude-opus-4-6"

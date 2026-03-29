@@ -10,7 +10,8 @@ use crate::github::{GitHubClient, OctocrabClient};
 use crate::lock::LockFile;
 use crate::models::{IssueState, TrackedIssue};
 use crate::transitions::{self, TransitionContext};
-use crate::worktree::{GitWorktreeManager, WorktreeManager};
+use crate::config::GitHubAuth;
+use crate::worktree::{AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager};
 
 pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     let base_dir = PathBuf::from(".hammurabi");
@@ -29,18 +30,43 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
         db_path.to_str().unwrap_or(".hammurabi/hammurabi.db"),
     )?);
 
-    // Initialize GitHub client
+    // Initialize GitHub client and token provider based on auth mode
     let github = Arc::new(OctocrabClient::new(
-        &config.github_token,
+        &config.github_auth,
         &config.owner,
         &config.repo_name,
         config.api_retry_count,
     )?);
 
-    // Initialize worktree manager (token stored on struct for GIT_ASKPASS auth)
+    let token_provider: Arc<dyn TokenProvider> = match &config.github_auth {
+        GitHubAuth::Token(token) => Arc::new(StaticTokenProvider::new(token.clone())),
+        GitHubAuth::App {
+            app_id,
+            private_key_pem,
+            installation_id,
+        } => {
+            let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem)
+                .map_err(|e| HammurabiError::Config(format!("invalid PEM key: {}", e)))?;
+            let app_crab = octocrab::Octocrab::builder()
+                .app(
+                    octocrab::models::AppId(*app_id),
+                    key,
+                )
+                .build()
+                .map_err(|e| HammurabiError::GitHub(format!(
+                    "failed to create App client for token provider: {}",
+                    e
+                )))?;
+            Arc::new(AppTokenProvider::new(
+                app_crab,
+                octocrab::models::InstallationId(*installation_id),
+            ))
+        }
+    };
+
     let worktree_mgr = Arc::new(GitWorktreeManager::new(
         base_dir.clone(),
-        config.github_token.clone(),
+        token_provider,
     ));
 
     // Ensure bare clone (token not embedded in URL — uses GIT_ASKPASS instead)

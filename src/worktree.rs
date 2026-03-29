@@ -1,7 +1,59 @@
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::error::HammurabiError;
+
+#[async_trait]
+pub trait TokenProvider: Send + Sync {
+    async fn get_token(&self) -> Result<String, HammurabiError>;
+}
+
+pub struct StaticTokenProvider {
+    token: String,
+}
+
+impl StaticTokenProvider {
+    pub fn new(token: String) -> Self {
+        Self { token }
+    }
+}
+
+#[async_trait]
+impl TokenProvider for StaticTokenProvider {
+    async fn get_token(&self) -> Result<String, HammurabiError> {
+        Ok(self.token.clone())
+    }
+}
+
+pub struct AppTokenProvider {
+    app_client: octocrab::Octocrab,
+    installation_id: octocrab::models::InstallationId,
+}
+
+impl AppTokenProvider {
+    pub fn new(app_client: octocrab::Octocrab, installation_id: octocrab::models::InstallationId) -> Self {
+        Self {
+            app_client,
+            installation_id,
+        }
+    }
+}
+
+#[async_trait]
+impl TokenProvider for AppTokenProvider {
+    async fn get_token(&self) -> Result<String, HammurabiError> {
+        use secrecy::ExposeSecret;
+        let (_crab, token) = self
+            .app_client
+            .installation_and_token(self.installation_id)
+            .await
+            .map_err(|e| {
+                HammurabiError::GitHub(format!("failed to get installation token: {}", e))
+            })?;
+        Ok(token.expose_secret().to_string())
+    }
+}
 
 #[async_trait]
 pub trait WorktreeManager: Send + Sync {
@@ -29,11 +81,11 @@ pub struct GitWorktreeManager {
     base_dir: PathBuf,
     bare_clone_path: PathBuf,
     worktrees_dir: PathBuf,
-    github_token: String,
+    token_provider: Arc<dyn TokenProvider>,
 }
 
 impl GitWorktreeManager {
-    pub fn new(base_dir: PathBuf, github_token: String) -> Self {
+    pub fn new(base_dir: PathBuf, token_provider: Arc<dyn TokenProvider>) -> Self {
         // Ensure absolute paths so git commands with different cwd values
         // always resolve paths correctly.
         let base_dir = if base_dir.is_relative() {
@@ -49,7 +101,7 @@ impl GitWorktreeManager {
             base_dir,
             bare_clone_path,
             worktrees_dir,
-            github_token,
+            token_provider,
         }
     }
 
@@ -92,8 +144,9 @@ impl GitWorktreeManager {
         args: &[&str],
         cwd: &Path,
     ) -> Result<String, HammurabiError> {
+        let token = self.token_provider.get_token().await?;
         let askpass_path = self.base_dir.join(".git-askpass.sh");
-        let script_content = format!("#!/bin/sh\necho '{}'", self.github_token);
+        let script_content = format!("#!/bin/sh\necho '{}'", token);
         tokio::fs::write(&askpass_path, &script_content)
             .await
             .map_err(|e| HammurabiError::Worktree(format!("write askpass script: {}", e)))?;
@@ -558,7 +611,7 @@ mod tests {
     fn test_relative_base_dir_becomes_absolute() {
         let mgr = GitWorktreeManager::new(
             PathBuf::from(".hammurabi"),
-            "token".to_string(),
+            Arc::new(StaticTokenProvider::new("token".to_string())),
         );
         assert!(mgr.base_dir.is_absolute(), "base_dir should be absolute");
         assert!(mgr.bare_clone_path.is_absolute(), "bare_clone_path should be absolute");
@@ -572,7 +625,7 @@ mod tests {
     fn test_absolute_base_dir_stays_absolute() {
         let mgr = GitWorktreeManager::new(
             PathBuf::from("/tmp/hammurabi-test"),
-            "token".to_string(),
+            Arc::new(StaticTokenProvider::new("token".to_string())),
         );
         assert_eq!(mgr.base_dir, PathBuf::from("/tmp/hammurabi-test"));
         assert_eq!(mgr.bare_clone_path, PathBuf::from("/tmp/hammurabi-test/repo"));
@@ -613,7 +666,7 @@ mod tests {
         let base = std::env::temp_dir().join("hammurabi-test-base-clone");
         let _ = tokio::fs::remove_dir_all(&base).await;
 
-        let mgr = GitWorktreeManager::new(base.clone(), "unused".to_string());
+        let mgr = GitWorktreeManager::new(base.clone(), Arc::new(StaticTokenProvider::new("unused".to_string())));
         let clone_path = mgr
             .ensure_bare_clone(origin.to_str().unwrap())
             .await
@@ -638,7 +691,7 @@ mod tests {
         let base = std::env::temp_dir().join("hammurabi-test-base-refs");
         let _ = tokio::fs::remove_dir_all(&base).await;
 
-        let mgr = GitWorktreeManager::new(base.clone(), "unused".to_string());
+        let mgr = GitWorktreeManager::new(base.clone(), Arc::new(StaticTokenProvider::new("unused".to_string())));
         mgr.ensure_bare_clone(origin.to_str().unwrap()).await.unwrap();
 
         // origin/main should resolve after the refspec reconfiguration
@@ -662,7 +715,7 @@ mod tests {
         let base = std::env::temp_dir().join("hammurabi-test-base-wt");
         let _ = tokio::fs::remove_dir_all(&base).await;
 
-        let mgr = GitWorktreeManager::new(base.clone(), "unused".to_string());
+        let mgr = GitWorktreeManager::new(base.clone(), Arc::new(StaticTokenProvider::new("unused".to_string())));
         mgr.ensure_bare_clone(origin.to_str().unwrap()).await.unwrap();
 
         let wt_path = mgr.create_worktree(7, "spec", "main").await.unwrap();

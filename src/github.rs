@@ -95,15 +95,46 @@ pub struct OctocrabClient {
 
 impl OctocrabClient {
     pub fn new(
-        token: &str,
+        auth: &crate::config::GitHubAuth,
         owner: &str,
         repo: &str,
         max_retries: u32,
     ) -> Result<Self, HammurabiError> {
-        let client = octocrab::Octocrab::builder()
-            .personal_token(token.to_string())
-            .build()
-            .map_err(|e| HammurabiError::GitHub(format!("failed to create GitHub client: {}", format_octocrab_error(&e))))?;
+        let client = match auth {
+            crate::config::GitHubAuth::Token(token) => {
+                octocrab::Octocrab::builder()
+                    .personal_token(token.to_string())
+                    .build()
+                    .map_err(|e| HammurabiError::GitHub(format!(
+                        "failed to create GitHub client: {}",
+                        format_octocrab_error(&e)
+                    )))?
+            }
+            crate::config::GitHubAuth::App {
+                app_id,
+                private_key_pem,
+                installation_id,
+            } => {
+                let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem)
+                    .map_err(|e| HammurabiError::Config(format!("invalid PEM key: {}", e)))?;
+                let app_crab = octocrab::Octocrab::builder()
+                    .app(
+                        octocrab::models::AppId(*app_id),
+                        key,
+                    )
+                    .build()
+                    .map_err(|e| HammurabiError::GitHub(format!(
+                        "failed to create GitHub App client: {}",
+                        format_octocrab_error(&e)
+                    )))?;
+                app_crab
+                    .installation(octocrab::models::InstallationId(*installation_id))
+                    .map_err(|e| HammurabiError::GitHub(format!(
+                        "failed to create installation client: {}",
+                        format_octocrab_error(&e)
+                    )))?
+            }
+        };
 
         Ok(Self {
             client,

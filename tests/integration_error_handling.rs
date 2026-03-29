@@ -49,7 +49,7 @@ fn test_config() -> Config {
         ai_max_turns: 50,
         ai_effort: "high".to_string(),
         approvers: vec!["alice".to_string()],
-        github_token: "token".to_string(),
+        github_auth: crate::config::GitHubAuth::Token("token".to_string()),
         spec: None,
         decompose: None,
         implement: None,

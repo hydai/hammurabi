@@ -3,6 +3,23 @@ use std::path::PathBuf;
 
 use crate::error::HammurabiError;
 
+#[derive(Debug, Clone)]
+pub enum GitHubAuth {
+    Token(String),
+    App {
+        app_id: u64,
+        private_key_pem: Vec<u8>,
+        installation_id: u64,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawGitHubAppConfig {
+    app_id: Option<u64>,
+    private_key_path: Option<String>,
+    installation_id: Option<u64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AiTaskConfig {
     pub ai_model: Option<String>,
@@ -23,6 +40,7 @@ struct RawConfig {
     ai_effort: Option<String>,
     approvers: Option<Vec<String>>,
     github_token: Option<String>,
+    github_app: Option<RawGitHubAppConfig>,
     spec: Option<AiTaskConfig>,
     decompose: Option<AiTaskConfig>,
     implement: Option<AiTaskConfig>,
@@ -42,7 +60,7 @@ pub struct Config {
     pub ai_max_turns: u32,
     pub ai_effort: String,
     pub approvers: Vec<String>,
-    pub github_token: String,
+    pub github_auth: GitHubAuth,
     pub spec: Option<AiTaskConfig>,
     pub decompose: Option<AiTaskConfig>,
     pub implement: Option<AiTaskConfig>,
@@ -146,6 +164,7 @@ pub fn load() -> Result<Config, HammurabiError> {
             ai_effort: None,
             approvers: None,
             github_token: None,
+            github_app: None,
             spec: None,
             decompose: None,
             implement: None,
@@ -188,11 +207,68 @@ pub fn load() -> Result<Config, HammurabiError> {
 
     let approvers = raw.approvers.unwrap_or_default();
 
+    // Resolve GitHub authentication: App mode or Token mode
     let mut github_token = raw.github_token.unwrap_or_default();
     if github_token.is_empty() {
         github_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
     }
     env_override_string("github_token", &mut github_token);
+
+    // Check for GitHub App config (from TOML or env vars)
+    let app_id = raw
+        .github_app
+        .as_ref()
+        .and_then(|a| a.app_id)
+        .or_else(|| {
+            env_override_option_string("github_app_id")
+                .and_then(|v| v.parse().ok())
+        });
+    let app_key_path = raw
+        .github_app
+        .as_ref()
+        .and_then(|a| a.private_key_path.clone())
+        .or_else(|| env_override_option_string("github_app_private_key_path"));
+    let app_installation_id = raw
+        .github_app
+        .as_ref()
+        .and_then(|a| a.installation_id)
+        .or_else(|| {
+            env_override_option_string("github_app_installation_id")
+                .and_then(|v| v.parse().ok())
+        });
+
+    let has_app_config = app_id.is_some() || app_key_path.is_some() || app_installation_id.is_some();
+    let has_token = !github_token.is_empty();
+
+    let github_auth = if has_app_config && has_token {
+        return Err(HammurabiError::Config(
+            "set either github_token or [github_app], not both".into(),
+        ));
+    } else if has_app_config {
+        let app_id = app_id.ok_or_else(|| {
+            HammurabiError::Config("[github_app] requires app_id".into())
+        })?;
+        let key_path = app_key_path.ok_or_else(|| {
+            HammurabiError::Config("[github_app] requires private_key_path".into())
+        })?;
+        let installation_id = app_installation_id.ok_or_else(|| {
+            HammurabiError::Config("[github_app] requires installation_id".into())
+        })?;
+        let private_key_pem = std::fs::read(&key_path).map_err(|e| {
+            HammurabiError::Config(format!("failed to read private key {}: {}", key_path, e))
+        })?;
+        GitHubAuth::App {
+            app_id,
+            private_key_pem,
+            installation_id,
+        }
+    } else if has_token {
+        GitHubAuth::Token(github_token)
+    } else {
+        return Err(HammurabiError::Config(
+            "github_token or [github_app] is required".into(),
+        ));
+    };
 
     if repo.is_empty() {
         return Err(HammurabiError::Config(
@@ -216,12 +292,6 @@ pub fn load() -> Result<Config, HammurabiError> {
         ));
     }
 
-    if github_token.is_empty() {
-        return Err(HammurabiError::Config(
-            "github_token is required (set in hammurabi.toml, GITHUB_TOKEN, or HAMMURABI_GITHUB_TOKEN)".into(),
-        ));
-    }
-
     Ok(Config {
         repo: repo.clone(),
         owner: owner.to_string(),
@@ -235,7 +305,7 @@ pub fn load() -> Result<Config, HammurabiError> {
         ai_max_turns,
         ai_effort,
         approvers,
-        github_token,
+        github_auth,
         spec: raw.spec,
         decompose: raw.decompose,
         implement: raw.implement,
@@ -266,9 +336,10 @@ mod tests {
         if approvers.is_empty() {
             return Err(HammurabiError::Config("approvers required".into()));
         }
-        let github_token = raw
-            .github_token
-            .unwrap_or_else(|| "test-token".to_string());
+        let github_auth = GitHubAuth::Token(
+            raw.github_token
+                .unwrap_or_else(|| "test-token".to_string()),
+        );
 
         Ok(Config {
             repo: repo.clone(),
@@ -285,7 +356,7 @@ mod tests {
             ai_max_turns: raw.ai_max_turns.unwrap_or(50),
             ai_effort: raw.ai_effort.unwrap_or_else(|| "high".to_string()),
             approvers,
-            github_token,
+            github_auth,
             spec: raw.spec,
             decompose: raw.decompose,
             implement: raw.implement,
