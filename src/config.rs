@@ -29,6 +29,15 @@ pub struct AiTaskConfig {
     pub ai_stall_timeout_secs: Option<u64>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct HooksConfig {
+    pub after_create: Option<String>,
+    pub before_run: Option<String>,
+    pub after_run: Option<String>,
+    pub before_remove: Option<String>,
+    pub timeout_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
     repo: Option<String>,
@@ -46,6 +55,7 @@ struct RawConfig {
     approvers: Option<Vec<String>>,
     github_token: Option<String>,
     github_app: Option<RawGitHubAppConfig>,
+    hooks: Option<HooksConfig>,
     spec: Option<AiTaskConfig>,
     implement: Option<AiTaskConfig>,
 }
@@ -68,6 +78,7 @@ pub struct Config {
     pub max_concurrent_agents: u32,
     pub approvers: Vec<String>,
     pub github_auth: GitHubAuth,
+    pub hooks: HooksConfig,
     pub spec: Option<AiTaskConfig>,
     pub implement: Option<AiTaskConfig>,
 }
@@ -192,6 +203,7 @@ pub fn load() -> Result<Config, HammurabiError> {
             approvers: None,
             github_token: None,
             github_app: None,
+            hooks: None,
             spec: None,
             implement: None,
         }
@@ -344,6 +356,7 @@ pub fn load() -> Result<Config, HammurabiError> {
         max_concurrent_agents,
         approvers,
         github_auth,
+        hooks: raw.hooks.unwrap_or_default(),
         spec: raw.spec,
         implement: raw.implement,
     })
@@ -397,6 +410,7 @@ mod tests {
             max_concurrent_agents: raw.max_concurrent_agents.unwrap_or(5),
             approvers,
             github_auth,
+            hooks: raw.hooks.unwrap_or_default(),
             spec: raw.spec,
             implement: raw.implement,
         })

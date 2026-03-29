@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod error;
 mod github;
+mod hooks;
 mod lock;
 mod models;
 mod poller;

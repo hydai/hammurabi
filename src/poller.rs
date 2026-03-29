@@ -13,7 +13,7 @@ use crate::github::{GitHubClient, OctocrabClient};
 use crate::lock::LockFile;
 use crate::models::{IssueState, TrackedIssue};
 use crate::transitions::{self, TransitionContext};
-use crate::config::GitHubAuth;
+use crate::config::{self, GitHubAuth};
 use crate::worktree::{AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager};
 
 pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
@@ -85,32 +85,50 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     worktree_mgr.ensure_default_branch(&default_branch).await?;
 
     // Initialize AI agent
-    let ai = Arc::new(ClaudeCliAgent::new());
+    let ai: Arc<dyn crate::claude::AiAgent> = Arc::new(ClaudeCliAgent::new());
 
-    let config = Arc::new(config);
+    let mut current_config = Arc::new(config);
 
     let ctx = TransitionContext {
         github: github.clone(),
-        ai,
+        ai: ai.clone(),
         worktree: worktree_mgr.clone(),
         db: db.clone(),
-        config: config.clone(),
+        config: current_config.clone(),
     };
 
     // Run startup reconciliation
     reconcile(&ctx).await?;
     tracing::info!(
-        max_concurrent = config.max_concurrent_agents,
+        max_concurrent = current_config.max_concurrent_agents,
         "Reconciliation complete, entering poll loop"
     );
 
     // Main poll loop
     loop {
+        // Dynamic config reload: re-read config each cycle
+        match config::load() {
+            Ok(new_config) => {
+                current_config = Arc::new(new_config);
+            }
+            Err(e) => {
+                tracing::warn!("Config reload failed, using previous config: {}", e);
+            }
+        }
+
+        let ctx = TransitionContext {
+            github: github.clone(),
+            ai: ai.clone(),
+            worktree: worktree_mgr.clone(),
+            db: db.clone(),
+            config: current_config.clone(),
+        };
+
         if let Err(e) = poll_cycle(&ctx).await {
             tracing::error!("Poll cycle error: {}", e);
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(config.poll_interval)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(current_config.poll_interval)).await;
     }
 }
 

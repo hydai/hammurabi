@@ -14,6 +14,8 @@ mod db;
 mod error;
 #[path = "../src/github.rs"]
 mod github;
+#[path = "../src/hooks.rs"]
+mod hooks;
 #[path = "../src/models.rs"]
 mod models;
 #[path = "../src/prompts.rs"]
@@ -51,6 +53,7 @@ fn test_config() -> Config {
         ai_stall_timeout_secs: 300,
         ai_max_retries: 2,
         max_concurrent_agents: 5,
+        hooks: crate::config::HooksConfig::default(),
         approvers: vec!["alice".to_string()],
         github_auth: crate::config::GitHubAuth::Token("token".to_string()),
         spec: None,

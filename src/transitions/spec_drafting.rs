@@ -1,5 +1,6 @@
 use crate::claude::AiInvocation;
 use crate::error::HammurabiError;
+use crate::hooks;
 use crate::models::{IssueState, TrackedIssue};
 use crate::prompts;
 
@@ -33,6 +34,16 @@ pub async fn execute(
         .ok_or_else(|| HammurabiError::Worktree("invalid worktree path".to_string()))?
         .to_string();
 
+    // Run after_create hook
+    let hook_timeout = hooks::hooks_timeout(&ctx.config.hooks);
+    hooks::run_hook(
+        "after_create",
+        ctx.config.hooks.after_create.as_deref(),
+        &worktree_path,
+        hook_timeout,
+    )
+    .await?;
+
     // Seed CLAUDE.md
     let claude_md = prompts::claude_md_for_spec(&gh_issue.title, &gh_issue.body);
     ctx.worktree
@@ -45,7 +56,16 @@ pub async fn execute(
     let max_turns = ctx.config.ai_max_turns_for_task("spec");
     let effort = ctx.config.ai_effort_for_task("spec").to_string();
 
-    let result = ctx
+    // Run before_run hook
+    hooks::run_hook(
+        "before_run",
+        ctx.config.hooks.before_run.as_deref(),
+        &worktree_path,
+        hook_timeout,
+    )
+    .await?;
+
+    let ai_result = ctx
         .ai
         .invoke(AiInvocation {
             model: model.clone(),
@@ -56,7 +76,18 @@ pub async fn execute(
             timeout_secs: ctx.config.ai_timeout_for_task("spec"),
             stall_timeout_secs: ctx.config.ai_stall_timeout_for_task("spec"),
         })
-        .await?;
+        .await;
+
+    // Run after_run hook (best-effort, regardless of AI result)
+    hooks::run_hook_best_effort(
+        "after_run",
+        ctx.config.hooks.after_run.as_deref(),
+        &worktree_path,
+        hook_timeout,
+    )
+    .await;
+
+    let result = ai_result?;
 
     // Log usage
     ctx.db.log_usage(
@@ -79,6 +110,13 @@ pub async fn execute(
     });
 
     // Clean up worktree
+    hooks::run_hook_best_effort(
+        "before_remove",
+        ctx.config.hooks.before_remove.as_deref(),
+        &worktree_path,
+        hook_timeout,
+    )
+    .await;
     let _ = ctx.worktree.remove_worktree(&worktree_path).await;
 
     // Post spec as issue comment
@@ -140,6 +178,7 @@ mod tests {
             ai_stall_timeout_secs: 300,
             ai_max_retries: 2,
             max_concurrent_agents: 5,
+            hooks: crate::config::HooksConfig::default(),
             approvers: vec!["alice".to_string()],
             github_auth: crate::config::GitHubAuth::Token("token".to_string()),
             spec: None,
