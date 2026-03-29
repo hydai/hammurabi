@@ -127,10 +127,12 @@ impl GitWorktreeManager {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
             return Err(HammurabiError::Worktree(format!(
-                "git {} failed: {}",
+                "git {} failed: {}{}",
                 args.join(" "),
-                stderr
+                stderr,
+                stdout
             )));
         }
 
