@@ -47,6 +47,7 @@ impl AiAgent for ClaudeCliAgent {
         let output = tokio::process::Command::new("claude")
             .current_dir(&invocation.worktree_path)
             .arg("--print")
+            .arg("--dangerously-skip-permissions")
             .arg("--verbose")
             .arg("--output-format")
             .arg("stream-json")

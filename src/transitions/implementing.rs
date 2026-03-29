@@ -78,6 +78,9 @@ pub async fn execute(
         &model,
     )?;
 
+    // Remove seeded CLAUDE.md so it doesn't leak into the PR
+    let _ = tokio::fs::remove_file(worktree_path.join("CLAUDE.md")).await;
+
     // Ensure all changes are committed
     ctx.worktree
         .commit_all_changes(
