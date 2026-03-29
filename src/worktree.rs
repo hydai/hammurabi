@@ -412,6 +412,136 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_relative_base_dir_becomes_absolute() {
+        let mgr = GitWorktreeManager::new(
+            PathBuf::from(".hammurabi"),
+            "token".to_string(),
+        );
+        assert!(mgr.base_dir.is_absolute(), "base_dir should be absolute");
+        assert!(mgr.bare_clone_path.is_absolute(), "bare_clone_path should be absolute");
+        assert!(mgr.worktrees_dir.is_absolute(), "worktrees_dir should be absolute");
+        assert!(mgr.base_dir.ends_with(".hammurabi"));
+        assert!(mgr.bare_clone_path.ends_with(".hammurabi/repo"));
+        assert!(mgr.worktrees_dir.ends_with(".hammurabi/worktrees"));
+    }
+
+    #[test]
+    fn test_absolute_base_dir_stays_absolute() {
+        let mgr = GitWorktreeManager::new(
+            PathBuf::from("/tmp/hammurabi-test"),
+            "token".to_string(),
+        );
+        assert_eq!(mgr.base_dir, PathBuf::from("/tmp/hammurabi-test"));
+        assert_eq!(mgr.bare_clone_path, PathBuf::from("/tmp/hammurabi-test/repo"));
+        assert_eq!(mgr.worktrees_dir, PathBuf::from("/tmp/hammurabi-test/worktrees"));
+    }
+
+    /// Creates a temp git repo with one commit, returning its path.
+    async fn create_temp_repo(name: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(name);
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+
+        // git init + first commit so there's a main branch
+        tokio::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&tmp)
+            .output().await.unwrap();
+        tokio::fs::write(tmp.join("README.md"), "# test").await.unwrap();
+        tokio::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&tmp)
+            .output().await.unwrap();
+        tokio::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&tmp)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .output().await.unwrap();
+
+        tmp
+    }
+
+    #[tokio::test]
+    async fn test_bare_clone_lands_in_correct_directory() {
+        let origin = create_temp_repo("hammurabi-test-origin-clone").await;
+        let base = std::env::temp_dir().join("hammurabi-test-base-clone");
+        let _ = tokio::fs::remove_dir_all(&base).await;
+
+        let mgr = GitWorktreeManager::new(base.clone(), "unused".to_string());
+        let clone_path = mgr
+            .ensure_bare_clone(origin.to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Clone should be at <base>/repo, not nested
+        assert_eq!(clone_path, base.join("repo"));
+        assert!(base.join("repo").exists(), "repo dir should exist at base/repo");
+        assert!(base.join("repo/HEAD").exists(), "should be a valid bare git repo");
+        assert!(
+            !base.join("repo/.hammurabi").exists(),
+            "should NOT have nested .hammurabi inside repo"
+        );
+
+        let _ = tokio::fs::remove_dir_all(&base).await;
+        let _ = tokio::fs::remove_dir_all(&origin).await;
+    }
+
+    #[tokio::test]
+    async fn test_bare_clone_has_origin_refs_after_setup() {
+        let origin = create_temp_repo("hammurabi-test-origin-refs").await;
+        let base = std::env::temp_dir().join("hammurabi-test-base-refs");
+        let _ = tokio::fs::remove_dir_all(&base).await;
+
+        let mgr = GitWorktreeManager::new(base.clone(), "unused".to_string());
+        mgr.ensure_bare_clone(origin.to_str().unwrap()).await.unwrap();
+
+        // origin/main should resolve after the refspec reconfiguration
+        let output = tokio::process::Command::new("git")
+            .args(["rev-parse", "--verify", "origin/main"])
+            .current_dir(base.join("repo"))
+            .output().await.unwrap();
+        assert!(
+            output.status.success(),
+            "origin/main should resolve in bare clone; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let _ = tokio::fs::remove_dir_all(&base).await;
+        let _ = tokio::fs::remove_dir_all(&origin).await;
+    }
+
+    #[tokio::test]
+    async fn test_worktree_created_at_correct_path_and_seedable() {
+        let origin = create_temp_repo("hammurabi-test-origin-wt").await;
+        let base = std::env::temp_dir().join("hammurabi-test-base-wt");
+        let _ = tokio::fs::remove_dir_all(&base).await;
+
+        let mgr = GitWorktreeManager::new(base.clone(), "unused".to_string());
+        mgr.ensure_bare_clone(origin.to_str().unwrap()).await.unwrap();
+
+        let wt_path = mgr.create_worktree(7, "spec", "main").await.unwrap();
+
+        // Worktree should be at <base>/worktrees/7-spec
+        assert_eq!(wt_path, base.join("worktrees/7-spec"));
+        assert!(wt_path.exists(), "worktree directory should exist");
+        assert!(
+            wt_path.join("README.md").exists(),
+            "worktree should contain files from main branch"
+        );
+
+        // Seeding a file should succeed
+        mgr.seed_file(&wt_path, "CLAUDE.md", "# Test context").await.unwrap();
+        let content = tokio::fs::read_to_string(wt_path.join("CLAUDE.md")).await.unwrap();
+        assert_eq!(content, "# Test context");
+
+        let _ = tokio::fs::remove_dir_all(&base).await;
+        let _ = tokio::fs::remove_dir_all(&origin).await;
+    }
+
     #[tokio::test]
     async fn test_mock_worktree_create() {
         let tmp = std::env::temp_dir().join("hammurabi-test-wt");
