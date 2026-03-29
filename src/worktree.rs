@@ -28,6 +28,15 @@ pub struct GitWorktreeManager {
 
 impl GitWorktreeManager {
     pub fn new(base_dir: PathBuf, github_token: String) -> Self {
+        // Ensure absolute paths so git commands with different cwd values
+        // always resolve paths correctly.
+        let base_dir = if base_dir.is_relative() {
+            std::env::current_dir()
+                .expect("failed to get current directory")
+                .join(&base_dir)
+        } else {
+            base_dir
+        };
         let bare_clone_path = base_dir.join("repo");
         let worktrees_dir = base_dir.join("worktrees");
         Self {
