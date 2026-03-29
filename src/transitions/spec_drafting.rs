@@ -68,6 +68,14 @@ pub async fn execute(
             &model,
         )?;
 
+    // Ensure all changes are committed (AI may or may not have committed)
+    ctx.worktree
+        .commit_all_changes(
+            &worktree_path,
+            &format!("spec: add SPEC.md for #{}", issue.github_issue_number),
+        )
+        .await?;
+
     // Push branch
     let branch_name = format!("hammurabi/{}-spec", issue.github_issue_number);
     ctx.worktree.push_branch(&branch_name).await?;

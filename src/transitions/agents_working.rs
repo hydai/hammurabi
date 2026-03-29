@@ -206,6 +206,14 @@ async fn run_single_agent(
         db.update_sub_issue_session(sub_id, Some(session_id))?;
     }
 
+    // Ensure all changes are committed (AI may or may not have committed)
+    worktree
+        .commit_all_changes(
+            &worktree_path,
+            &format!("feat: implement {} for #{}", sub_title, issue_number),
+        )
+        .await?;
+
     // Push branch
     let branch_name = format!("hammurabi/{}-{}", issue_number, task_name);
     worktree.push_branch(&branch_name).await?;

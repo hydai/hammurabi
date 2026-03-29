@@ -14,6 +14,11 @@ pub trait WorktreeManager: Send + Sync {
         base_branch: &str,
     ) -> Result<PathBuf, HammurabiError>;
     async fn remove_worktree(&self, path: &Path) -> Result<(), HammurabiError>;
+    async fn commit_all_changes(
+        &self,
+        worktree_path: &Path,
+        message: &str,
+    ) -> Result<bool, HammurabiError>;
     async fn push_branch(&self, branch_name: &str) -> Result<(), HammurabiError>;
     async fn delete_remote_branch(&self, branch_name: &str) -> Result<(), HammurabiError>;
     async fn seed_file(&self, worktree_path: &Path, filename: &str, content: &str) -> Result<(), HammurabiError>;
@@ -252,6 +257,39 @@ impl WorktreeManager for GitWorktreeManager {
         Ok(())
     }
 
+    async fn commit_all_changes(
+        &self,
+        worktree_path: &Path,
+        message: &str,
+    ) -> Result<bool, HammurabiError> {
+        // Stage all changes
+        self.run_git(&["add", "-A"], worktree_path).await?;
+
+        // Try to commit; git exits non-zero if nothing to commit
+        let result = self
+            .run_git(
+                &[
+                    "-c", "user.name=Hammurabi",
+                    "-c", "user.email=hammurabi@noreply",
+                    "commit", "-m", message,
+                ],
+                worktree_path,
+            )
+            .await;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                let msg = format!("{}", e);
+                if msg.contains("nothing to commit") {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
     async fn push_branch(&self, branch_name: &str) -> Result<(), HammurabiError> {
         // Delete remote branch first if it exists (daemon-managed branches)
         let _ = self.delete_remote_branch(branch_name).await;
@@ -354,6 +392,14 @@ pub mod mock {
                 .unwrap()
                 .push(path.to_path_buf());
             Ok(())
+        }
+
+        async fn commit_all_changes(
+            &self,
+            _worktree_path: &Path,
+            _message: &str,
+        ) -> Result<bool, HammurabiError> {
+            Ok(true)
         }
 
         async fn push_branch(&self, branch_name: &str) -> Result<(), HammurabiError> {
