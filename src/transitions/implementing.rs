@@ -213,6 +213,7 @@ mod tests {
             ai_timeout_secs: 3600,
             ai_stall_timeout_secs: 300,
             ai_max_retries: 2,
+            max_concurrent_agents: 5,
             approvers: vec!["alice".to_string()],
             github_auth: crate::config::GitHubAuth::Token("token".to_string()),
             spec: None,

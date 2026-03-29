@@ -42,6 +42,7 @@ struct RawConfig {
     ai_timeout_secs: Option<u64>,
     ai_stall_timeout_secs: Option<u64>,
     ai_max_retries: Option<u32>,
+    max_concurrent_agents: Option<u32>,
     approvers: Option<Vec<String>>,
     github_token: Option<String>,
     github_app: Option<RawGitHubAppConfig>,
@@ -64,6 +65,7 @@ pub struct Config {
     pub ai_timeout_secs: u64,
     pub ai_stall_timeout_secs: u64,
     pub ai_max_retries: u32,
+    pub max_concurrent_agents: u32,
     pub approvers: Vec<String>,
     pub github_auth: GitHubAuth,
     pub spec: Option<AiTaskConfig>,
@@ -186,6 +188,7 @@ pub fn load() -> Result<Config, HammurabiError> {
             ai_timeout_secs: None,
             ai_stall_timeout_secs: None,
             ai_max_retries: None,
+            max_concurrent_agents: None,
             approvers: None,
             github_token: None,
             github_app: None,
@@ -233,6 +236,9 @@ pub fn load() -> Result<Config, HammurabiError> {
 
     let mut ai_max_retries = raw.ai_max_retries.unwrap_or(2);
     env_override("ai_max_retries", &mut ai_max_retries);
+
+    let mut max_concurrent_agents = raw.max_concurrent_agents.unwrap_or(5);
+    env_override("max_concurrent_agents", &mut max_concurrent_agents);
 
     let approvers = raw.approvers.unwrap_or_default();
 
@@ -335,6 +341,7 @@ pub fn load() -> Result<Config, HammurabiError> {
         ai_timeout_secs,
         ai_stall_timeout_secs,
         ai_max_retries,
+        max_concurrent_agents,
         approvers,
         github_auth,
         spec: raw.spec,
@@ -387,6 +394,7 @@ mod tests {
             ai_timeout_secs: raw.ai_timeout_secs.unwrap_or(3600),
             ai_stall_timeout_secs: raw.ai_stall_timeout_secs.unwrap_or(300),
             ai_max_retries: raw.ai_max_retries.unwrap_or(2),
+            max_concurrent_agents: raw.max_concurrent_agents.unwrap_or(5),
             approvers,
             github_auth,
             spec: raw.spec,

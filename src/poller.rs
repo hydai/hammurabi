@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+
 use crate::approval::{self, CommentApprovalResult, PrApprovalResult};
 use crate::claude::ClaudeCliAgent;
 use crate::config::Config;
@@ -96,7 +99,10 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
 
     // Run startup reconciliation
     reconcile(&ctx).await?;
-    tracing::info!("Reconciliation complete");
+    tracing::info!(
+        max_concurrent = config.max_concurrent_agents,
+        "Reconciliation complete, entering poll loop"
+    );
 
     // Main poll loop
     loop {
@@ -186,23 +192,46 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
         }
     }
 
-    // Process each tracked issue
-    let all_tracked = ctx.db.get_all_issues()?;
-    for issue in &all_tracked {
-        match process_issue(ctx, issue).await {
-            Ok(()) => {
-                // Reset retry count on successful processing
+    // Process each tracked issue concurrently (bounded by max_concurrent_agents)
+    let mut all_tracked = ctx.db.get_all_issues()?;
+    // Sort by issue number — oldest issues get processed first
+    all_tracked.sort_by_key(|i| i.github_issue_number);
+
+    // Filter out terminal states that need no processing
+    let actionable: Vec<_> = all_tracked
+        .into_iter()
+        .filter(|i| i.state != IssueState::Done)
+        .collect();
+
+    let semaphore = Arc::new(Semaphore::new(
+        ctx.config.max_concurrent_agents as usize,
+    ));
+    let mut join_set = JoinSet::new();
+
+    for issue in actionable {
+        let sem = semaphore.clone();
+        let ctx = ctx.clone();
+        join_set.spawn(async move {
+            let _permit = sem.acquire_owned().await.unwrap();
+            let result = process_issue(&ctx, &issue).await;
+            (issue, result)
+        });
+    }
+
+    // Collect results and handle errors
+    while let Some(join_result) = join_set.join_next().await {
+        match join_result {
+            Ok((issue, Ok(()))) => {
                 if issue.retry_count > 0 {
                     let _ = ctx.db.reset_retry_count(issue.id);
                 }
             }
-            Err(e) => {
+            Ok((issue, Err(e))) => {
                 tracing::error!(
                     issue = issue.github_issue_number,
                     "Error processing issue: {}",
                     e
                 );
-                // For active states, check if we should retry or fail
                 if issue.state.is_active() {
                     let max_retries = ctx.config.ai_max_retries;
                     if issue.retry_count < max_retries {
@@ -217,7 +246,6 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                         );
                         let _ = ctx.db.update_issue_error(issue.id, &e.to_string());
                     } else {
-                        // Exhausted retries — transition to Failed
                         let _ = ctx.db.update_issue_state(
                             issue.id,
                             IssueState::Failed,
@@ -236,6 +264,9 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                             .await;
                     }
                 }
+            }
+            Err(join_err) => {
+                tracing::error!("Task panicked: {}", join_err);
             }
         }
     }

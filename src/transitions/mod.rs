@@ -10,6 +10,7 @@ use crate::db::Database;
 use crate::github::GitHubClient;
 use crate::worktree::WorktreeManager;
 
+#[derive(Clone)]
 pub struct TransitionContext {
     pub github: Arc<dyn GitHubClient>,
     pub ai: Arc<dyn AiAgent>,
