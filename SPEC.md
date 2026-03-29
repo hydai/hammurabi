@@ -27,7 +27,8 @@ Repository maintainers who want AI-assisted development with mandatory human app
 1. **Issue monitoring** -- Discover new issues by polling all open issues in the repository; new issues not yet tracked are inserted as Discovered
 2. **Spec generation** -- Analyze a discovered issue and produce a spec posted as an issue comment for human review
 3. **Implementation** -- Single AI agent implements the approved spec in an isolated worktree, producing one PR
-4. **Approval gates** -- Block progress until human approves via `/approve` comment (spec) or PR merge (implementation)
+4. **PR feedback loop** -- Reviewers leave comments on the PR; the daemon re-runs implementation with feedback and force-pushes, iterating until the PR is merged
+5. **Approval gates** -- Block progress until human approves via `/approve` comment (spec) or PR merge (implementation)
 5. **Error handling and retry** -- Transition to failed state on errors; retry via `/retry` comment or CLI
 6. **CLI interface** -- Start daemon, view status, retry and reset issues
 7. **Usage tracking** -- Record token usage per AI invocation for cost monitoring
@@ -66,6 +67,12 @@ Repository maintainers who want AI-assisted development with mandatory human app
 **Action**: The daemon re-runs spec generation with the feedback incorporated and posts a revised spec comment.
 **Outcome**: The maintainer sees an updated spec to review.
 
+### PR feedback
+
+**Context**: The maintainer reviews the implementation PR and leaves a comment requesting changes.
+**Action**: The daemon detects the comment from an authorized approver, re-runs implementation with the feedback, and force-pushes to update the PR.
+**Outcome**: The PR is updated with revised code. The maintainer can review again, leave more feedback, or merge.
+
 ### Implementation complete
 
 **Context**: The maintainer reviews and merges the implementation PR.
@@ -88,7 +95,7 @@ Each tracked issue moves through these states:
 | SpecDrafting | Active | AI analyzes the issue and generates a spec |
 | AwaitSpecApproval | Blocking | Spec posted as issue comment, waiting for `/approve` or feedback |
 | Implementing | Active | AI agent implementing the approved spec in an isolated worktree |
-| AwaitPRApproval | Blocking | Implementation PR open, waiting for human merge |
+| AwaitPRApproval | Blocking | Implementation PR open, waiting for human merge or feedback |
 | Done | Terminal | Issue fully resolved |
 | Failed | Terminal (retryable) | Error occurred; retryable via `/retry` |
 
@@ -102,6 +109,7 @@ Each tracked issue moves through these states:
 | AwaitSpecApproval → SpecDrafting | Authorized approver posts feedback (non-`/approve` comment) |
 | Implementing → AwaitPRApproval | AI agent completes; daemon pushes branch and opens PR |
 | AwaitPRApproval → Done | Implementation PR merged by human |
+| AwaitPRApproval → Implementing | Authorized approver leaves comment on the PR (feedback loop) |
 | AwaitPRApproval → Failed | Implementation PR closed without merge |
 | Any active → Failed | Unrecoverable error during transition |
 | Failed → previous active state | `/retry` comment or CLI retry command |
@@ -114,12 +122,15 @@ Each tracked issue moves through these states:
 |------|-----------|----------|
 | Spec approval | `/approve` comment by human | Approving the generated spec |
 | Implementation approval | PR merge by human | Merging the implementation PR |
+| PR feedback | Comment on the PR by human | Requesting implementation revisions |
 
 The daemon never force-merges a PR or auto-approves a spec.
 
-Only users listed in the `approvers` configuration may trigger approval. `/approve` comments from users not in the list are ignored. PR merges by unauthorized users are accepted (GitHub's own permission model governs who can merge).
+Only users listed in the `approvers` configuration may trigger approval or feedback. `/approve` comments from users not in the list are ignored. PR merges by unauthorized users are accepted (GitHub's own permission model governs who can merge).
 
 For spec approval, any reply from an authorized approver that is not `/approve` is treated as feedback. The daemon re-runs spec generation with the feedback appended and posts a revised spec. If multiple feedback comments arrive while spec generation is in progress, the daemon uses only the most recent non-`/approve` comment from an authorized approver as feedback when the next spec generation cycle begins. Earlier unprocessed comments are skipped.
+
+For PR feedback, any comment from an authorized approver on the implementation PR triggers a revision cycle. The daemon transitions back to Implementing with the feedback, re-runs the AI agent, and force-pushes the updated branch. The PR updates automatically. The same "most recent comment wins" rule applies: if multiple comments arrive during re-implementation, only the latest from an approver is used. The daemon tracks the last processed PR comment ID to avoid re-processing.
 
 If the implementation PR is closed without merge, the issue transitions to Failed.
 
@@ -155,7 +166,7 @@ On startup, the daemon reconciles each tracked issue against GitHub before the f
 |------------|----------------|
 | Active (Discovered, SpecDrafting, Implementing) | Re-execute the transition on the next poll cycle; active transitions are idempotent |
 | AwaitSpecApproval | Check for new comments since `last_comment_id`; process `/approve` or feedback accordingly |
-| AwaitPRApproval | Check if the implementation PR was merged while stopped; if merged, advance to Done |
+| AwaitPRApproval | Check if the implementation PR was merged while stopped; if merged, advance to Done. Also check for new PR comments for feedback |
 | Failed | Remain in Failed; no automatic retry |
 | Done | No action |
 
@@ -202,7 +213,7 @@ If neither is set, the daemon exits with an error on startup.
 
 ## Data Model
 
-**Issues**: Each tracked GitHub issue persists its GitHub issue number, title, current state, spec comment ID, spec content, implementation PR number, last processed comment ID, previous state (for retry), error message, worktree path, and timestamps.
+**Issues**: Each tracked GitHub issue persists its GitHub issue number, title, current state, spec comment ID, spec content, implementation PR number, last processed comment ID (for issue comments), last processed PR comment ID (for PR feedback), previous state (for retry), error message, worktree path, and timestamps.
 
 **Usage log**: Each AI invocation records its parent issue, transition name, input and output token counts, model used, and timestamp.
 
@@ -217,7 +228,7 @@ The daemon places a task-specific context file in the worktree root before invok
 | Task | Agent Receives | Agent Produces |
 |------|---------------|----------------|
 | Spec drafting | Issue title, issue body, optional prior feedback, access to repository contents | SPEC.md in the worktree (content extracted and posted as issue comment) |
-| Implementation | Full spec content, original issue title and body, access to repository contents | Code changes committed to the worktree branch |
+| Implementation | Full spec content, original issue title and body, optional PR review feedback, access to repository contents | Code changes committed to the worktree branch |
 
 Prompt construction and formatting are implementation details. The contract defines what information flows in and what artifact comes out.
 
