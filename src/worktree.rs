@@ -6,6 +6,7 @@ use crate::error::HammurabiError;
 #[async_trait]
 pub trait WorktreeManager: Send + Sync {
     async fn ensure_bare_clone(&self, repo_url: &str) -> Result<PathBuf, HammurabiError>;
+    async fn ensure_default_branch(&self, default_branch: &str) -> Result<(), HammurabiError>;
     async fn fetch_origin(&self) -> Result<(), HammurabiError>;
     async fn create_worktree(
         &self,
@@ -165,6 +166,97 @@ impl WorktreeManager for GitWorktreeManager {
         .await?;
 
         Ok(self.bare_clone_path.clone())
+    }
+
+    async fn ensure_default_branch(&self, default_branch: &str) -> Result<(), HammurabiError> {
+        let remote_ref = format!("origin/{}", default_branch);
+        let exists = self
+            .run_git(&["rev-parse", "--verify", &remote_ref], &self.bare_clone_path)
+            .await;
+
+        if exists.is_ok() {
+            return Ok(());
+        }
+
+        tracing::info!(
+            branch = default_branch,
+            "Remote default branch has no commits, creating initial commit"
+        );
+
+        // Create a temporary worktree for the initial commit
+        let init_path = self.worktrees_dir.join("_init");
+        tokio::fs::create_dir_all(&self.worktrees_dir)
+            .await
+            .map_err(|e| HammurabiError::Worktree(format!("create worktrees dir: {}", e)))?;
+
+        // Clean up any stale init worktree
+        if init_path.exists() {
+            let _ = self
+                .run_git(
+                    &["worktree", "remove", "--force", init_path.to_str().unwrap()],
+                    &self.bare_clone_path,
+                )
+                .await;
+            if init_path.exists() {
+                let _ = tokio::fs::remove_dir_all(&init_path).await;
+            }
+            let _ = self
+                .run_git(&["worktree", "prune"], &self.bare_clone_path)
+                .await;
+        }
+
+        // Create orphan worktree
+        self.run_git(
+            &[
+                "worktree", "add", "--detach",
+                init_path.to_str().unwrap(),
+            ],
+            &self.bare_clone_path,
+        )
+        .await?;
+
+        // Create orphan branch with initial commit
+        self.run_git(
+            &["checkout", "--orphan", default_branch],
+            &init_path,
+        )
+        .await?;
+
+        self.run_git(
+            &[
+                "-c", "user.name=Hammurabi",
+                "-c", "user.email=hammurabi@noreply",
+                "commit", "--allow-empty", "-m", "chore: initial commit",
+            ],
+            &init_path,
+        )
+        .await?;
+
+        self.run_git_authenticated(
+            &["push", "origin", default_branch],
+            &init_path,
+        )
+        .await?;
+
+        // Clean up
+        let _ = self
+            .run_git(
+                &["worktree", "remove", "--force", init_path.to_str().unwrap()],
+                &self.bare_clone_path,
+            )
+            .await;
+        let _ = self
+            .run_git(&["worktree", "prune"], &self.bare_clone_path)
+            .await;
+
+        // Fetch so origin/<default_branch> is available
+        self.run_git_authenticated(
+            &["fetch", "origin"],
+            &self.bare_clone_path,
+        )
+        .await?;
+
+        Ok(())
     }
 
     async fn fetch_origin(&self) -> Result<(), HammurabiError> {
@@ -356,6 +448,10 @@ pub mod mock {
     impl WorktreeManager for MockWorktreeManager {
         async fn ensure_bare_clone(&self, _repo_url: &str) -> Result<PathBuf, HammurabiError> {
             Ok(self.worktree_base.join("repo"))
+        }
+
+        async fn ensure_default_branch(&self, _default_branch: &str) -> Result<(), HammurabiError> {
+            Ok(())
         }
 
         async fn fetch_origin(&self) -> Result<(), HammurabiError> {

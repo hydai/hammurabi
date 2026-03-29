@@ -51,6 +51,10 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     worktree_mgr.ensure_bare_clone(&repo_url).await?;
     tracing::info!("Bare clone ready");
 
+    // Ensure the remote default branch exists (empty repos need an initial commit)
+    let default_branch = github.get_default_branch().await?;
+    worktree_mgr.ensure_default_branch(&default_branch).await?;
+
     // Initialize AI agent
     let ai = Arc::new(ClaudeCliAgent::new());
 
