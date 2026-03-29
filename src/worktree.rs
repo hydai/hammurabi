@@ -128,9 +128,8 @@ impl WorktreeManager for GitWorktreeManager {
             return Ok(self.bare_clone_path.clone());
         }
 
-        let clone_dest = self.bare_clone_path.to_str().unwrap_or("repo");
         self.run_git_authenticated(
-            &["clone", "--bare", repo_url, clone_dest],
+            &["clone", "--bare", repo_url, "repo"],
             &self.base_dir,
         )
         .await?;
