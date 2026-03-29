@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Hammurabi is a Rust CLI daemon that monitors a GitHub repository's issue board and orchestrates Claude CLI agents to automate the issue lifecycle (spec drafting, decomposition, implementation) with mandatory human approval at every write step.
+Hammurabi is a Rust CLI daemon that monitors a GitHub repository's issue board and orchestrates a Claude CLI agent to automate the issue lifecycle (spec drafting → approval → implementation) with mandatory human approval at every step.
 
 ## Build & Test
 
@@ -34,7 +34,7 @@ src/
 ├── main.rs              # CLI entry point
 ├── config.rs            # TOML config + env overrides
 ├── db.rs                # SQLite schema + CRUD
-├── models.rs            # IssueState, SubIssueState, data structs
+├── models.rs            # IssueState, data structs
 ├── state_machine.rs     # Pure transition function
 ├── github.rs            # GitHubClient trait + OctocrabClient
 ├── claude.rs            # AiAgent trait + ClaudeCliAgent
@@ -46,7 +46,6 @@ src/
 ├── error.rs             # Error types
 └── transitions/
     ├── spec_drafting.rs
-    ├── decomposing.rs
-    ├── agents_working.rs
+    ├── implementing.rs
     └── completion.rs
 ```
