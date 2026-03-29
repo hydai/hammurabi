@@ -82,6 +82,7 @@ pub struct TrackedIssue {
     pub spec_content: Option<String>,
     pub impl_pr_number: Option<u64>,
     pub last_comment_id: Option<u64>,
+    pub last_pr_comment_id: Option<u64>,
     pub previous_state: Option<IssueState>,
     pub error_message: Option<String>,
     pub worktree_path: Option<String>,

@@ -167,7 +167,7 @@ async fn test_implementation_failure_and_retry() {
     };
 
     // Implementation should fail (no mock response)
-    let result = transitions::implementing::execute(&ctx, &issue).await;
+    let result = transitions::implementing::execute(&ctx, &issue, None).await;
     assert!(result.is_err());
 
     // Simulate failure state
@@ -195,7 +195,7 @@ async fn test_implementation_failure_and_retry() {
     });
 
     let issue = db.get_issue(1).unwrap().unwrap();
-    transitions::implementing::execute(&ctx, &issue)
+    transitions::implementing::execute(&ctx, &issue, None)
         .await
         .unwrap();
 

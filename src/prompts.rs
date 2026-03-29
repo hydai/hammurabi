@@ -57,11 +57,12 @@ pub fn implementation_prompt(
     issue_title: &str,
     issue_body: &str,
     spec_content: &str,
+    feedback: Option<&str>,
 ) -> String {
     let title = wrap_untrusted("issue-title", issue_title);
     let body = wrap_untrusted("issue-body", issue_body);
     let spec = wrap_untrusted("spec", spec_content);
-    format!(
+    let mut prompt = format!(
         r#"{UNTRUSTED_CONTENT_WARNING}
 
 You are tasked with implementing a feature based on an approved specification.
@@ -85,7 +86,16 @@ You are tasked with implementing a feature based on an approved specification.
 5. Commit all changes to the current branch.
 
 Implement the complete specification. Ensure all success criteria from the spec are met."#
-    )
+    );
+
+    if let Some(fb) = feedback {
+        let wrapped_fb = wrap_untrusted("reviewer-feedback", fb);
+        prompt.push_str(&format!(
+            "\n\n## Reviewer Feedback\nThe reviewer provided the following feedback on the previous implementation. Please revise the code to address this feedback:\n\n{wrapped_fb}"
+        ));
+    }
+
+    prompt
 }
 
 pub fn claude_md_for_spec(issue_title: &str, issue_body: &str) -> String {
@@ -118,11 +128,12 @@ pub fn claude_md_for_implementation(
     issue_title: &str,
     issue_body: &str,
     spec_content: &str,
+    feedback: Option<&str>,
 ) -> String {
     let title = wrap_untrusted("issue-title", issue_title);
     let body = wrap_untrusted("issue-body", issue_body);
     let spec = wrap_untrusted("spec", spec_content);
-    format!(
+    let mut md = format!(
         r#"# Hammurabi Agent Context
 
 {UNTRUSTED_CONTENT_WARNING}
@@ -144,7 +155,16 @@ Implement the following approved specification.
 - Implement all changes described in the specification
 - Write tests for your changes
 - Commit all changes when done"#
-    )
+    );
+
+    if let Some(fb) = feedback {
+        let wrapped_fb = wrap_untrusted("reviewer-feedback", fb);
+        md.push_str(&format!(
+            "\n\n## Reviewer Feedback\nAddress this feedback from the PR review:\n\n{wrapped_fb}"
+        ));
+    }
+
+    md
 }
 
 #[cfg(test)]
@@ -183,12 +203,26 @@ mod tests {
 
     #[test]
     fn test_implementation_prompt_content() {
-        let prompt = implementation_prompt("Add auth", "Implement authentication", "# Spec");
+        let prompt = implementation_prompt("Add auth", "Implement authentication", "# Spec", None);
         assert!(prompt.contains("<untrusted-issue-title-content>"));
         assert!(prompt.contains("<untrusted-issue-body-content>"));
         assert!(prompt.contains("<untrusted-spec-content>"));
         assert!(prompt.contains("IMPORTANT SAFETY INSTRUCTION"));
         assert!(prompt.contains("Implement all changes"));
+        assert!(!prompt.contains("Reviewer Feedback"));
+    }
+
+    #[test]
+    fn test_implementation_prompt_with_feedback() {
+        let prompt = implementation_prompt(
+            "Add auth",
+            "Implement authentication",
+            "# Spec",
+            Some("Fix error handling in login"),
+        );
+        assert!(prompt.contains("Fix error handling in login"));
+        assert!(prompt.contains("Reviewer Feedback"));
+        assert!(prompt.contains("<untrusted-reviewer-feedback-content>"));
     }
 
     #[test]
@@ -197,9 +231,14 @@ mod tests {
         assert!(spec_md.contains("<untrusted-issue-title-content>"));
         assert!(spec_md.contains("IMPORTANT SAFETY INSTRUCTION"));
 
-        let impl_md = claude_md_for_implementation("Title", "Body", "# Spec");
+        let impl_md = claude_md_for_implementation("Title", "Body", "# Spec", None);
         assert!(impl_md.contains("<untrusted-issue-title-content>"));
         assert!(impl_md.contains("<untrusted-spec-content>"));
         assert!(impl_md.contains("IMPORTANT SAFETY INSTRUCTION"));
+        assert!(!impl_md.contains("Reviewer Feedback"));
+
+        let impl_md_fb = claude_md_for_implementation("Title", "Body", "# Spec", Some("Fix X"));
+        assert!(impl_md_fb.contains("Fix X"));
+        assert!(impl_md_fb.contains("Reviewer Feedback"));
     }
 }

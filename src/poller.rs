@@ -254,7 +254,7 @@ async fn process_issue(
                         )
                         .await?;
                     let updated = ctx.db.get_issue(issue.github_issue_number)?.unwrap();
-                    transitions::implementing::execute(ctx, &updated).await?;
+                    transitions::implementing::execute(ctx, &updated, None).await?;
                 }
                 CommentApprovalResult::Feedback { body, comment_id } => {
                     ctx.db
@@ -279,16 +279,54 @@ async fn process_issue(
             }
         }
         IssueState::Implementing => {
-            transitions::implementing::execute(ctx, issue).await?;
+            transitions::implementing::execute(ctx, issue, None).await?;
         }
         IssueState::AwaitPRApproval => {
+            // First check if PR was merged or closed
             transitions::completion::check(ctx, issue).await?;
-            // Also check stale
             let updated = ctx.db.get_issue(issue.github_issue_number)?;
-            if let Some(u) = &updated {
-                if u.state == IssueState::AwaitPRApproval {
-                    check_stale(ctx, u).await?;
+            let issue = match &updated {
+                Some(u) if u.state == IssueState::AwaitPRApproval => u,
+                _ => return Ok(()), // State changed (merged/failed), done
+            };
+
+            // PR still open — check for reviewer feedback on the PR
+            if let Some(pr_number) = issue.impl_pr_number {
+                match approval::check_comment_approval(
+                    &*ctx.github,
+                    pr_number,
+                    issue.last_pr_comment_id,
+                    &ctx.config.approvers,
+                )
+                .await?
+                {
+                    CommentApprovalResult::Feedback { body, comment_id } => {
+                        ctx.db.update_issue_last_pr_comment(issue.id, comment_id)?;
+                        ctx.db.update_issue_state(
+                            issue.id,
+                            IssueState::Implementing,
+                            Some(IssueState::AwaitPRApproval),
+                        )?;
+                        ctx.github
+                            .post_issue_comment(
+                                issue.github_issue_number,
+                                "PR feedback received. Revising implementation...",
+                            )
+                            .await?;
+                        let updated = ctx.db.get_issue(issue.github_issue_number)?.unwrap();
+                        transitions::implementing::execute(ctx, &updated, Some(&body)).await?;
+                    }
+                    CommentApprovalResult::Approved { comment_id } => {
+                        // /approve on a PR is not meaningful — merge is the real approval.
+                        // Just update the cursor so we don't re-process this comment.
+                        ctx.db.update_issue_last_pr_comment(issue.id, comment_id)?;
+                    }
+                    CommentApprovalResult::Pending => {
+                        check_stale(ctx, issue).await?;
+                    }
                 }
+            } else {
+                check_stale(ctx, issue).await?;
             }
         }
         IssueState::Failed => {

@@ -148,7 +148,7 @@ async fn test_full_lifecycle() {
 
     // Phase 4: Implementation — creates single PR
     let issue = db.get_issue(1).unwrap().unwrap();
-    transitions::implementing::execute(&ctx, &issue)
+    transitions::implementing::execute(&ctx, &issue, None)
         .await
         .unwrap();
 

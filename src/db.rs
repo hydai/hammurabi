@@ -56,6 +56,7 @@ impl Database {
                     spec_content TEXT,
                     impl_pr_number INTEGER,
                     last_comment_id INTEGER,
+                    last_pr_comment_id INTEGER,
                     previous_state TEXT,
                     error_message TEXT,
                     worktree_path TEXT,
@@ -82,6 +83,16 @@ impl Database {
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
         }
 
+        // Add last_pr_comment_id column if missing (incremental migration)
+        let has_pr_comment_col = conn
+            .prepare("SELECT last_pr_comment_id FROM issues LIMIT 0")
+            .is_ok();
+        if !has_pr_comment_col {
+            let _ = conn.execute_batch(
+                "ALTER TABLE issues ADD COLUMN last_pr_comment_id INTEGER;",
+            );
+        }
+
         // Create tables if they don't exist (fresh install or post-migration)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS issues (
@@ -93,6 +104,7 @@ impl Database {
                 spec_content TEXT,
                 impl_pr_number INTEGER,
                 last_comment_id INTEGER,
+                last_pr_comment_id INTEGER,
                 previous_state TEXT,
                 error_message TEXT,
                 worktree_path TEXT,
@@ -140,8 +152,8 @@ impl Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
-                        spec_content, impl_pr_number, last_comment_id, previous_state,
-                        error_message, worktree_path, created_at, updated_at
+                        spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
+                        previous_state, error_message, worktree_path, created_at, updated_at
                  FROM issues WHERE github_issue_number = ?1",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -164,8 +176,8 @@ impl Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
-                        spec_content, impl_pr_number, last_comment_id, previous_state,
-                        error_message, worktree_path, created_at, updated_at
+                        spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
+                        previous_state, error_message, worktree_path, created_at, updated_at
                  FROM issues",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -187,8 +199,8 @@ impl Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
-                        spec_content, impl_pr_number, last_comment_id, previous_state,
-                        error_message, worktree_path, created_at, updated_at
+                        spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
+                        previous_state, error_message, worktree_path, created_at, updated_at
                  FROM issues WHERE state = ?1",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -293,6 +305,20 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_issue_last_pr_comment(
+        &self,
+        id: i64,
+        comment_id: u64,
+    ) -> Result<(), HammurabiError> {
+        self.conn()
+            .execute(
+                "UPDATE issues SET last_pr_comment_id = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![comment_id as i64, id],
+            )
+            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_issue_worktree(
         &self,
         id: i64,
@@ -379,14 +405,15 @@ fn row_to_tracked_issue(row: &rusqlite::Row) -> TrackedIssue {
         spec_content: row.get(5).unwrap(),
         impl_pr_number: row.get::<_, Option<i64>>(6).unwrap().map(|v| v as u64),
         last_comment_id: row.get::<_, Option<i64>>(7).unwrap().map(|v| v as u64),
+        last_pr_comment_id: row.get::<_, Option<i64>>(8).unwrap().map(|v| v as u64),
         previous_state: row
-            .get::<_, Option<String>>(8)
+            .get::<_, Option<String>>(9)
             .unwrap()
             .and_then(|s| s.parse().ok()),
-        error_message: row.get(9).unwrap(),
-        worktree_path: row.get(10).unwrap(),
-        created_at: row.get(11).unwrap(),
-        updated_at: row.get(12).unwrap(),
+        error_message: row.get(10).unwrap(),
+        worktree_path: row.get(11).unwrap(),
+        created_at: row.get(12).unwrap(),
+        updated_at: row.get(13).unwrap(),
     }
 }
 

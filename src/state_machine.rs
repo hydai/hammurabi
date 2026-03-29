@@ -8,6 +8,7 @@ pub enum Event {
     SpecFeedback { body: String },
     PrMerged,
     PrClosedWithoutMerge,
+    PrFeedback { body: String },
     TransitionError { message: String },
     RetryRequested,
     ResetRequested,
@@ -92,6 +93,17 @@ pub fn transition(
             SideEffect::PostComment {
                 body: "Implementation PR merged. Issue complete!".to_string(),
             },
+        ]),
+
+        (IssueState::AwaitPRApproval, Event::PrFeedback { body }) => Ok(vec![
+            SideEffect::UpdateState {
+                new_state: IssueState::Implementing,
+                previous_state: Some(IssueState::AwaitPRApproval),
+            },
+            SideEffect::PostComment {
+                body: "PR feedback received. Revising implementation...".to_string(),
+            },
+            SideEffect::ExecuteImplementation,
         ]),
 
         (IssueState::AwaitPRApproval, Event::PrClosedWithoutMerge) => Ok(vec![
@@ -376,6 +388,23 @@ mod tests {
         // Then spec drafting can execute on poll
         let effects = transition(IssueState::SpecDrafting, Event::PollCycleActive, None).unwrap();
         assert!(effects.contains(&SideEffect::ExecuteSpecDrafting { feedback: None }));
+    }
+
+    #[test]
+    fn test_pr_feedback() {
+        let effects = transition(
+            IssueState::AwaitPRApproval,
+            Event::PrFeedback {
+                body: "fix the error handling".to_string(),
+            },
+            None,
+        )
+        .unwrap();
+        assert!(effects.contains(&SideEffect::UpdateState {
+            new_state: IssueState::Implementing,
+            previous_state: Some(IssueState::AwaitPRApproval),
+        }));
+        assert!(effects.contains(&SideEffect::ExecuteImplementation));
     }
 
     #[test]
