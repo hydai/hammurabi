@@ -7,6 +7,7 @@ use crate::error::HammurabiError;
 pub struct AiTaskConfig {
     pub ai_model: Option<String>,
     pub ai_max_turns: Option<u32>,
+    pub ai_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -19,6 +20,7 @@ struct RawConfig {
     api_retry_count: Option<u32>,
     ai_model: Option<String>,
     ai_max_turns: Option<u32>,
+    ai_effort: Option<String>,
     approvers: Option<Vec<String>>,
     github_token: Option<String>,
     spec: Option<AiTaskConfig>,
@@ -38,6 +40,7 @@ pub struct Config {
     pub api_retry_count: u32,
     pub ai_model: String,
     pub ai_max_turns: u32,
+    pub ai_effort: String,
     pub approvers: Vec<String>,
     pub github_token: String,
     pub spec: Option<AiTaskConfig>,
@@ -64,6 +67,16 @@ impl Config {
             _ => None,
         };
         override_turns.unwrap_or(self.ai_max_turns)
+    }
+
+    pub fn ai_effort_for_task(&self, task: &str) -> &str {
+        let override_effort = match task {
+            "spec" => self.spec.as_ref().and_then(|c| c.ai_effort.as_deref()),
+            "decompose" => self.decompose.as_ref().and_then(|c| c.ai_effort.as_deref()),
+            "implement" => self.implement.as_ref().and_then(|c| c.ai_effort.as_deref()),
+            _ => None,
+        };
+        override_effort.unwrap_or(&self.ai_effort)
     }
 }
 
@@ -130,6 +143,7 @@ pub fn load() -> Result<Config, HammurabiError> {
             api_retry_count: None,
             ai_model: None,
             ai_max_turns: None,
+            ai_effort: None,
             approvers: None,
             github_token: None,
             spec: None,
@@ -166,6 +180,11 @@ pub fn load() -> Result<Config, HammurabiError> {
 
     let mut ai_max_turns = raw.ai_max_turns.unwrap_or(50);
     env_override("ai_max_turns", &mut ai_max_turns);
+
+    let mut ai_effort = raw
+        .ai_effort
+        .unwrap_or_else(|| "high".to_string());
+    env_override_string("ai_effort", &mut ai_effort);
 
     let approvers = raw.approvers.unwrap_or_default();
 
@@ -214,6 +233,7 @@ pub fn load() -> Result<Config, HammurabiError> {
         api_retry_count,
         ai_model,
         ai_max_turns,
+        ai_effort,
         approvers,
         github_token,
         spec: raw.spec,
@@ -263,6 +283,7 @@ mod tests {
             api_retry_count: raw.api_retry_count.unwrap_or(3),
             ai_model,
             ai_max_turns: raw.ai_max_turns.unwrap_or(50),
+            ai_effort: raw.ai_effort.unwrap_or_else(|| "high".to_string()),
             approvers,
             github_token,
             spec: raw.spec,

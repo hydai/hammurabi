@@ -44,12 +44,14 @@ pub async fn execute(
     let prompt = prompts::spec_drafting_prompt(&gh_issue.title, &gh_issue.body);
     let model = ctx.config.ai_model_for_task("spec").to_string();
     let max_turns = ctx.config.ai_max_turns_for_task("spec");
+    let effort = ctx.config.ai_effort_for_task("spec").to_string();
 
     let result = ctx
         .ai
         .invoke(AiInvocation {
             model: model.clone(),
             max_turns,
+            effort,
             worktree_path: worktree_str.clone(),
             prompt,
         })
@@ -132,6 +134,7 @@ mod tests {
             api_retry_count: 3,
             ai_model: "test-model".to_string(),
             ai_max_turns: 50,
+            ai_effort: "high".to_string(),
             approvers: vec!["alice".to_string()],
             github_token: "token".to_string(),
             spec: None,

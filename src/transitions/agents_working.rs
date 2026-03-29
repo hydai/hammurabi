@@ -180,11 +180,13 @@ async fn run_single_agent(
     let prompt = prompts::implementation_prompt(sub_title, sub_description, spec_content);
     let model = config.ai_model_for_task("implement").to_string();
     let max_turns = config.ai_max_turns_for_task("implement");
+    let effort = config.ai_effort_for_task("implement").to_string();
 
     let result = ai
         .invoke(AiInvocation {
             model: model.clone(),
             max_turns,
+            effort,
             worktree_path: worktree_str,
             prompt,
         })
@@ -298,6 +300,7 @@ mod tests {
             api_retry_count: 3,
             ai_model: "test-model".to_string(),
             ai_max_turns: 50,
+            ai_effort: "high".to_string(),
             approvers: vec!["alice".to_string()],
             github_token: "token".to_string(),
             spec: None,

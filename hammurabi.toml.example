@@ -26,6 +26,10 @@ ai_model = "claude-sonnet-4-6"
 # Default max conversation turns per AI invocation (default: 50)
 # ai_max_turns = 50
 
+# Default effort level for AI reasoning depth (default: "high")
+# Options: "low", "medium", "high", "max"
+# ai_effort = "high"
+
 # GitHub usernames authorized to approve (required)
 approvers = ["your-github-username"]
 
@@ -36,11 +40,14 @@ approvers = ["your-github-username"]
 # [spec]
 # ai_model = "claude-opus-4-6"
 # ai_max_turns = 100
+# ai_effort = "high"
 
 # [decompose]
 # ai_model = "claude-sonnet-4-6"
 # ai_max_turns = 30
+# ai_effort = "high"
 
 # [implement]
 # ai_model = "claude-sonnet-4-6"
 # ai_max_turns = 50
+# ai_effort = "high"

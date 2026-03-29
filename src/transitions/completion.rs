@@ -95,6 +95,7 @@ mod tests {
             api_retry_count: 3,
             ai_model: "test-model".to_string(),
             ai_max_turns: 50,
+            ai_effort: "high".to_string(),
             approvers: vec!["alice".to_string()],
             github_token: "token".to_string(),
             spec: None,

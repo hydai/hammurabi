@@ -51,12 +51,14 @@ pub async fn execute(
     );
     let model = ctx.config.ai_model_for_task("decompose").to_string();
     let max_turns = ctx.config.ai_max_turns_for_task("decompose");
+    let effort = ctx.config.ai_effort_for_task("decompose").to_string();
 
     let result = ctx
         .ai
         .invoke(AiInvocation {
             model: model.clone(),
             max_turns,
+            effort,
             worktree_path: worktree_str.clone(),
             prompt,
         })
@@ -174,6 +176,7 @@ mod tests {
             api_retry_count: 3,
             ai_model: "test-model".to_string(),
             ai_max_turns: 50,
+            ai_effort: "high".to_string(),
             approvers: vec!["alice".to_string()],
             github_token: "token".to_string(),
             spec: None,

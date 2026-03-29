@@ -7,6 +7,7 @@ use crate::error::HammurabiError;
 pub struct AiInvocation {
     pub model: String,
     pub max_turns: u32,
+    pub effort: String,
     pub worktree_path: String,
     pub prompt: String,
 }
@@ -51,6 +52,8 @@ impl AiAgent for ClaudeCliAgent {
             .arg(&invocation.model)
             .arg("--max-turns")
             .arg(invocation.max_turns.to_string())
+            .arg("--effort")
+            .arg(&invocation.effort)
             .arg("--add-dir")
             .arg(&invocation.worktree_path)
             .arg("-p")
@@ -307,6 +310,7 @@ mod tests {
             .invoke(AiInvocation {
                 model: "claude-sonnet-4-6".to_string(),
                 max_turns: 50,
+                effort: "high".to_string(),
                 worktree_path: "/tmp/test".to_string(),
                 prompt: "Generate a spec for this issue".to_string(),
             })
@@ -324,6 +328,7 @@ mod tests {
             .invoke(AiInvocation {
                 model: "claude-sonnet-4-6".to_string(),
                 max_turns: 50,
+                effort: "high".to_string(),
                 worktree_path: "/tmp/test".to_string(),
                 prompt: "something".to_string(),
             })
@@ -346,6 +351,7 @@ mod tests {
             .invoke(AiInvocation {
                 model: "claude-sonnet-4-6".to_string(),
                 max_turns: 50,
+                effort: "high".to_string(),
                 worktree_path: "/tmp/test".to_string(),
                 prompt: "anything".to_string(),
             })
