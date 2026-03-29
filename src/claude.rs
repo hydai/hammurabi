@@ -46,6 +46,7 @@ impl AiAgent for ClaudeCliAgent {
 
         let output = tokio::process::Command::new("claude")
             .arg("--print")
+            .arg("--verbose")
             .arg("--output-format")
             .arg("stream-json")
             .arg("--model")
