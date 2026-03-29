@@ -1,6 +1,6 @@
-use crate::approval::{self, SubPrApprovalResult};
+use crate::approval::{self, PrApprovalResult};
 use crate::error::HammurabiError;
-use crate::models::{IssueState, SubIssueState, TrackedIssue};
+use crate::models::{IssueState, TrackedIssue};
 
 use super::TransitionContext;
 
@@ -8,64 +8,52 @@ pub async fn check(
     ctx: &TransitionContext,
     issue: &TrackedIssue,
 ) -> Result<(), HammurabiError> {
-    let sub_issues = ctx.db.get_sub_issues(issue.id)?;
+    let pr_number = match issue.impl_pr_number {
+        Some(n) => n,
+        None => return Ok(()),
+    };
 
-    let pr_subs: Vec<_> = sub_issues
-        .iter()
-        .filter(|s| s.pr_number.is_some())
-        .cloned()
-        .collect();
-
-    if pr_subs.is_empty() {
-        return Ok(());
-    }
-
-    match approval::check_sub_pr_approvals(&*ctx.github, &pr_subs).await? {
-        SubPrApprovalResult::AllMerged => {
-            // Update all sub-issues to done
-            for sub in &pr_subs {
-                ctx.db
-                    .update_sub_issue_state(sub.id, SubIssueState::Done)?;
-            }
-
+    match approval::check_pr_approval(&*ctx.github, pr_number).await? {
+        PrApprovalResult::Merged => {
             ctx.db.update_issue_state(
                 issue.id,
                 IssueState::Done,
-                Some(IssueState::AwaitSubPRApprovals),
+                Some(IssueState::AwaitPRApproval),
             )?;
 
             ctx.github
                 .post_issue_comment(
                     issue.github_issue_number,
-                    "All sub-issue PRs merged. Issue complete!",
+                    "Implementation PR merged. Issue complete!",
                 )
                 .await?;
 
             tracing::info!(
                 issue = issue.github_issue_number,
-                "All sub-PRs merged, issue complete"
+                pr = pr_number,
+                "PR merged, issue complete"
             );
         }
-        SubPrApprovalResult::AnyClosedWithoutMerge => {
+        PrApprovalResult::ClosedWithoutMerge => {
             ctx.db.update_issue_state(
                 issue.id,
                 IssueState::Failed,
-                Some(IssueState::AwaitSubPRApprovals),
+                Some(IssueState::AwaitPRApproval),
             )?;
             ctx.db.update_issue_error(
                 issue.id,
-                "A sub-issue PR was closed without merge",
+                "Implementation PR was closed without merge",
             )?;
 
             ctx.github
                 .post_issue_comment(
                     issue.github_issue_number,
-                    "A sub-issue PR was closed without merge. Use `/retry` to retry.",
+                    "Implementation PR was closed without merge. Use `/retry` to retry.",
                 )
                 .await?;
         }
-        SubPrApprovalResult::Pending => {
-            // Nothing to do, still waiting
+        PrApprovalResult::Pending => {
+            // Still waiting
         }
     }
 
@@ -75,11 +63,11 @@ pub async fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claude::mock::MockAiAgent;
     use crate::config::Config;
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::PrStatus;
-    use crate::claude::mock::MockAiAgent;
     use crate::worktree::mock::MockWorktreeManager;
     use std::sync::Arc;
 
@@ -89,7 +77,6 @@ mod tests {
             owner: "owner".to_string(),
             repo_name: "repo".to_string(),
             poll_interval: 60,
-            max_concurrent_agents: 3,
             tracking_label: "hammurabi".to_string(),
             stale_timeout_days: 7,
             api_retry_count: 3,
@@ -99,29 +86,23 @@ mod tests {
             approvers: vec!["alice".to_string()],
             github_auth: crate::config::GitHubAuth::Token("token".to_string()),
             spec: None,
-            decompose: None,
             implement: None,
         }
     }
 
     #[tokio::test]
-    async fn test_all_merged_completes_issue() {
+    async fn test_pr_merged_completes_issue() {
         let tmp = std::env::temp_dir().join("hammurabi-test-completion");
         let _ = tokio::fs::remove_dir_all(&tmp).await;
 
         let gh = Arc::new(MockGitHubClient::new());
         gh.set_pr_status(10, PrStatus::Merged);
-        gh.set_pr_status(11, PrStatus::Merged);
 
         let db = Arc::new(Database::open(":memory:").unwrap());
         db.insert_issue(1, "Feature X").unwrap();
         let issue = db.get_issue(1).unwrap().unwrap();
-        let sub1 = db.insert_sub_issue(issue.id, "Task 1", "").unwrap();
-        let sub2 = db.insert_sub_issue(issue.id, "Task 2", "").unwrap();
-        db.update_sub_issue_state(sub1, SubIssueState::PrOpen).unwrap();
-        db.update_sub_issue_pr(sub1, 10).unwrap();
-        db.update_sub_issue_state(sub2, SubIssueState::PrOpen).unwrap();
-        db.update_sub_issue_pr(sub2, 11).unwrap();
+        db.update_issue_impl_pr(issue.id, 10).unwrap();
+        let issue = db.get_issue(1).unwrap().unwrap();
 
         let ctx = TransitionContext {
             github: gh.clone(),
@@ -145,18 +126,13 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
 
         let gh = Arc::new(MockGitHubClient::new());
-        gh.set_pr_status(10, PrStatus::Merged);
-        gh.set_pr_status(11, PrStatus::ClosedWithoutMerge);
+        gh.set_pr_status(10, PrStatus::ClosedWithoutMerge);
 
         let db = Arc::new(Database::open(":memory:").unwrap());
         db.insert_issue(1, "Feature X").unwrap();
         let issue = db.get_issue(1).unwrap().unwrap();
-        let sub1 = db.insert_sub_issue(issue.id, "Task 1", "").unwrap();
-        let sub2 = db.insert_sub_issue(issue.id, "Task 2", "").unwrap();
-        db.update_sub_issue_state(sub1, SubIssueState::PrOpen).unwrap();
-        db.update_sub_issue_pr(sub1, 10).unwrap();
-        db.update_sub_issue_state(sub2, SubIssueState::PrOpen).unwrap();
-        db.update_sub_issue_pr(sub2, 11).unwrap();
+        db.update_issue_impl_pr(issue.id, 10).unwrap();
+        let issue = db.get_issue(1).unwrap().unwrap();
 
         let ctx = TransitionContext {
             github: gh,
@@ -170,6 +146,32 @@ mod tests {
 
         let updated = db.get_issue(1).unwrap().unwrap();
         assert_eq!(updated.state, IssueState::Failed);
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn test_no_pr_number_does_nothing() {
+        let tmp = std::env::temp_dir().join("hammurabi-test-completion-nopr");
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+
+        let gh = Arc::new(MockGitHubClient::new());
+        let db = Arc::new(Database::open(":memory:").unwrap());
+        db.insert_issue(1, "Feature X").unwrap();
+        let issue = db.get_issue(1).unwrap().unwrap();
+
+        let ctx = TransitionContext {
+            github: gh,
+            ai: Arc::new(MockAiAgent::new()),
+            worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
+            db: db.clone(),
+            config: Arc::new(test_config()),
+        };
+
+        check(&ctx, &issue).await.unwrap();
+
+        let updated = db.get_issue(1).unwrap().unwrap();
+        assert_eq!(updated.state, IssueState::Discovered); // unchanged
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }

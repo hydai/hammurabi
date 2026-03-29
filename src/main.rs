@@ -139,10 +139,6 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::anyhow!("issue #{} has no previous state to retry from", issue_number)
             })?;
 
-            if prev == IssueState::AgentsWorking {
-                db.reset_failed_sub_issues(issue.id)?;
-            }
-
             db.update_issue_state(issue.id, prev, None)?;
             println!(
                 "Issue #{} reset from Failed to {}. Will be processed on next poll cycle.",

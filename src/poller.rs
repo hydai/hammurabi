@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::approval::{self, DecompApprovalResult, SpecApprovalResult};
+use crate::approval::{self, CommentApprovalResult, PrApprovalResult};
 use crate::claude::ClaudeCliAgent;
 use crate::config::Config;
 use crate::db::Database;
@@ -224,57 +224,14 @@ async fn process_issue(
 ) -> Result<(), HammurabiError> {
     match issue.state {
         IssueState::Discovered => {
-            transitions::spec_drafting::execute(ctx, issue).await?;
+            transitions::spec_drafting::execute(ctx, issue, None).await?;
         }
         IssueState::SpecDrafting => {
             // Re-execute on restart (idempotent)
-            transitions::spec_drafting::execute(ctx, issue).await?;
+            transitions::spec_drafting::execute(ctx, issue, None).await?;
         }
         IssueState::AwaitSpecApproval => {
-            if let Some(pr_number) = issue.spec_pr_number {
-                match approval::check_spec_approval(&*ctx.github, pr_number).await? {
-                    SpecApprovalResult::Approved => {
-                        ctx.db.update_issue_state(
-                            issue.id,
-                            IssueState::Decomposing,
-                            Some(IssueState::AwaitSpecApproval),
-                        )?;
-                        ctx.github
-                            .post_issue_comment(
-                                issue.github_issue_number,
-                                "Spec PR merged. Starting decomposition...",
-                            )
-                            .await?;
-                        // Execute decomposition immediately
-                        let updated = ctx.db.get_issue(issue.github_issue_number)?.unwrap();
-                        transitions::decomposing::execute(ctx, &updated, None).await?;
-                    }
-                    SpecApprovalResult::Rejected => {
-                        ctx.db.update_issue_state(
-                            issue.id,
-                            IssueState::Failed,
-                            Some(IssueState::AwaitSpecApproval),
-                        )?;
-                        ctx.db
-                            .update_issue_error(issue.id, "Spec PR closed without merge")?;
-                        ctx.github
-                            .post_issue_comment(
-                                issue.github_issue_number,
-                                "Spec PR was closed without merge. Use `/retry` to regenerate.",
-                            )
-                            .await?;
-                    }
-                    SpecApprovalResult::Pending => {
-                        check_stale(ctx, issue).await?;
-                    }
-                }
-            }
-        }
-        IssueState::Decomposing => {
-            transitions::decomposing::execute(ctx, issue, None).await?;
-        }
-        IssueState::AwaitDecompApproval => {
-            match approval::check_decomp_approval(
+            match approval::check_comment_approval(
                 &*ctx.github,
                 issue.github_issue_number,
                 issue.last_comment_id,
@@ -282,54 +239,54 @@ async fn process_issue(
             )
             .await?
             {
-                DecompApprovalResult::Approved { comment_id } => {
+                CommentApprovalResult::Approved { comment_id } => {
                     ctx.db
                         .update_issue_last_comment(issue.id, comment_id)?;
                     ctx.db.update_issue_state(
                         issue.id,
-                        IssueState::AgentsWorking,
-                        Some(IssueState::AwaitDecompApproval),
+                        IssueState::Implementing,
+                        Some(IssueState::AwaitSpecApproval),
                     )?;
                     ctx.github
                         .post_issue_comment(
                             issue.github_issue_number,
-                            "Decomposition approved. Spawning agents...",
+                            "Spec approved. Starting implementation...",
                         )
                         .await?;
                     let updated = ctx.db.get_issue(issue.github_issue_number)?.unwrap();
-                    transitions::agents_working::execute(ctx, &updated).await?;
+                    transitions::implementing::execute(ctx, &updated).await?;
                 }
-                DecompApprovalResult::Feedback { body, comment_id } => {
+                CommentApprovalResult::Feedback { body, comment_id } => {
                     ctx.db
                         .update_issue_last_comment(issue.id, comment_id)?;
                     ctx.db.update_issue_state(
                         issue.id,
-                        IssueState::Decomposing,
-                        Some(IssueState::AwaitDecompApproval),
+                        IssueState::SpecDrafting,
+                        Some(IssueState::AwaitSpecApproval),
                     )?;
                     ctx.github
                         .post_issue_comment(
                             issue.github_issue_number,
-                            "Feedback received. Re-running decomposition...",
+                            "Feedback received. Revising spec...",
                         )
                         .await?;
                     let updated = ctx.db.get_issue(issue.github_issue_number)?.unwrap();
-                    transitions::decomposing::execute(ctx, &updated, Some(&body)).await?;
+                    transitions::spec_drafting::execute(ctx, &updated, Some(&body)).await?;
                 }
-                DecompApprovalResult::Pending => {
+                CommentApprovalResult::Pending => {
                     check_stale(ctx, issue).await?;
                 }
             }
         }
-        IssueState::AgentsWorking => {
-            transitions::agents_working::execute(ctx, issue).await?;
+        IssueState::Implementing => {
+            transitions::implementing::execute(ctx, issue).await?;
         }
-        IssueState::AwaitSubPRApprovals => {
+        IssueState::AwaitPRApproval => {
             transitions::completion::check(ctx, issue).await?;
             // Also check stale
             let updated = ctx.db.get_issue(issue.github_issue_number)?;
             if let Some(u) = &updated {
-                if u.state == IssueState::AwaitSubPRApprovals {
+                if u.state == IssueState::AwaitPRApproval {
                     check_stale(ctx, u).await?;
                 }
             }
@@ -347,10 +304,6 @@ async fn process_issue(
                 ctx.db
                     .update_issue_last_comment(issue.id, comment_id)?;
                 if let Some(prev) = issue.previous_state {
-                    // Reset failed sub-issues if retrying from AgentsWorking
-                    if prev == IssueState::AgentsWorking {
-                        ctx.db.reset_failed_sub_issues(issue.id)?;
-                    }
                     ctx.db
                         .update_issue_state(issue.id, prev, None)?;
                     ctx.github
@@ -402,47 +355,39 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
             // Active states: will re-execute on next poll cycle (idempotent)
             IssueState::Discovered
             | IssueState::SpecDrafting
-            | IssueState::Decomposing
-            | IssueState::AgentsWorking => {
+            | IssueState::Implementing => {
                 tracing::info!(
                     issue = issue.github_issue_number,
                     state = %issue.state,
                     "Active state — will re-execute on next poll"
                 );
             }
-            // Check if spec PR was merged while stopped
+            // Check for new comments since last processed
             IssueState::AwaitSpecApproval => {
-                if let Some(pr_number) = issue.spec_pr_number {
-                    match approval::check_spec_approval(&*ctx.github, pr_number).await {
-                        Ok(SpecApprovalResult::Approved) => {
+                tracing::info!(
+                    issue = issue.github_issue_number,
+                    "Checking for spec approval comments during downtime"
+                );
+            }
+            // Check if implementation PR was merged while stopped
+            IssueState::AwaitPRApproval => {
+                if let Some(pr_number) = issue.impl_pr_number {
+                    match approval::check_pr_approval(&*ctx.github, pr_number).await {
+                        Ok(PrApprovalResult::Merged) => {
                             tracing::info!(
                                 issue = issue.github_issue_number,
-                                "Spec PR merged during downtime"
+                                "Implementation PR merged during downtime"
                             );
                         }
-                        Ok(SpecApprovalResult::Rejected) => {
+                        Ok(PrApprovalResult::ClosedWithoutMerge) => {
                             tracing::info!(
                                 issue = issue.github_issue_number,
-                                "Spec PR closed during downtime"
+                                "Implementation PR closed during downtime"
                             );
                         }
                         _ => {}
                     }
                 }
-            }
-            // Check for new comments
-            IssueState::AwaitDecompApproval => {
-                tracing::info!(
-                    issue = issue.github_issue_number,
-                    "Checking for comments during downtime"
-                );
-            }
-            // Check sub-PR statuses
-            IssueState::AwaitSubPRApprovals => {
-                tracing::info!(
-                    issue = issue.github_issue_number,
-                    "Checking sub-PR statuses during downtime"
-                );
             }
             // Terminal states: no action
             IssueState::Failed | IssueState::Done => {}

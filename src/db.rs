@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, Result as SqlResult};
 use std::sync::Mutex;
 
 use crate::error::HammurabiError;
-use crate::models::{IssueState, SubIssue, SubIssueState, TrackedIssue, UsageEntry};
+use crate::models::{IssueState, TrackedIssue, UsageEntry};
 
 pub struct Database {
     conn: Mutex<Connection>,
@@ -32,15 +32,29 @@ impl Database {
     }
 
     fn run_migrations(&self) -> Result<(), HammurabiError> {
-        self.conn()
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS issues (
+        let conn = self.conn();
+
+        // Check if we need to migrate from old schema
+        let has_old_schema = conn
+            .prepare("SELECT spec_pr_number FROM issues LIMIT 0")
+            .is_ok();
+        let has_new_schema = conn
+            .prepare("SELECT spec_comment_id FROM issues LIMIT 0")
+            .is_ok();
+
+        if has_old_schema && !has_new_schema {
+            // Migrate from old schema: rename old table, create new, copy data
+            conn.execute_batch(
+                "ALTER TABLE issues RENAME TO issues_old;
+
+                CREATE TABLE issues (
                     id INTEGER PRIMARY KEY,
                     github_issue_number INTEGER UNIQUE NOT NULL,
                     github_issue_title TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'Discovered',
-                    spec_pr_number INTEGER,
-                    decomposition_comment_id INTEGER,
+                    spec_comment_id INTEGER,
+                    spec_content TEXT,
+                    impl_pr_number INTEGER,
                     last_comment_id INTEGER,
                     previous_state TEXT,
                     error_message TEXT,
@@ -49,30 +63,56 @@ impl Database {
                     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
 
-                CREATE TABLE IF NOT EXISTS sub_issues (
-                    id INTEGER PRIMARY KEY,
-                    parent_issue_id INTEGER NOT NULL REFERENCES issues(id),
-                    github_issue_number INTEGER,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL DEFAULT '',
-                    state TEXT NOT NULL DEFAULT 'pending',
-                    pr_number INTEGER,
-                    worktree_path TEXT,
-                    session_id TEXT
-                );
+                INSERT INTO issues (id, github_issue_number, github_issue_title, state,
+                    last_comment_id, previous_state, error_message, worktree_path,
+                    created_at, updated_at)
+                SELECT id, github_issue_number, github_issue_title,
+                    CASE
+                        WHEN state IN ('Decomposing', 'AwaitDecompApproval', 'AgentsWorking', 'AwaitSubPRApprovals')
+                        THEN 'Discovered'
+                        ELSE state
+                    END,
+                    last_comment_id, previous_state, error_message, worktree_path,
+                    created_at, updated_at
+                FROM issues_old;
 
-                CREATE TABLE IF NOT EXISTS usage_log (
-                    id INTEGER PRIMARY KEY,
-                    issue_id INTEGER NOT NULL REFERENCES issues(id),
-                    sub_issue_id INTEGER REFERENCES sub_issues(id),
-                    transition TEXT NOT NULL,
-                    input_tokens INTEGER NOT NULL,
-                    output_tokens INTEGER NOT NULL,
-                    model TEXT NOT NULL,
-                    timestamp TEXT NOT NULL DEFAULT (datetime('now'))
-                );",
+                DROP TABLE IF EXISTS issues_old;
+                DROP TABLE IF EXISTS sub_issues;",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        }
+
+        // Create tables if they don't exist (fresh install or post-migration)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS issues (
+                id INTEGER PRIMARY KEY,
+                github_issue_number INTEGER UNIQUE NOT NULL,
+                github_issue_title TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'Discovered',
+                spec_comment_id INTEGER,
+                spec_content TEXT,
+                impl_pr_number INTEGER,
+                last_comment_id INTEGER,
+                previous_state TEXT,
+                error_message TEXT,
+                worktree_path TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS usage_log (
+                id INTEGER PRIMARY KEY,
+                issue_id INTEGER NOT NULL REFERENCES issues(id),
+                sub_issue_id INTEGER,
+                transition TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .map_err(|e| HammurabiError::Database(e.to_string()))?;
+
         Ok(())
     }
 
@@ -99,8 +139,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, github_issue_number, github_issue_title, state, spec_pr_number,
-                        decomposition_comment_id, last_comment_id, previous_state,
+                "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
+                        spec_content, impl_pr_number, last_comment_id, previous_state,
                         error_message, worktree_path, created_at, updated_at
                  FROM issues WHERE github_issue_number = ?1",
             )
@@ -123,8 +163,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, github_issue_number, github_issue_title, state, spec_pr_number,
-                        decomposition_comment_id, last_comment_id, previous_state,
+                "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
+                        spec_content, impl_pr_number, last_comment_id, previous_state,
                         error_message, worktree_path, created_at, updated_at
                  FROM issues",
             )
@@ -146,8 +186,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn
             .prepare(
-                "SELECT id, github_issue_number, github_issue_title, state, spec_pr_number,
-                        decomposition_comment_id, last_comment_id, previous_state,
+                "SELECT id, github_issue_number, github_issue_title, state, spec_comment_id,
+                        spec_content, impl_pr_number, last_comment_id, previous_state,
                         error_message, worktree_path, created_at, updated_at
                  FROM issues WHERE state = ?1",
             )
@@ -197,29 +237,43 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_issue_spec_pr(
-        &self,
-        id: i64,
-        pr_number: u64,
-    ) -> Result<(), HammurabiError> {
-        self.conn()
-            .execute(
-                "UPDATE issues SET spec_pr_number = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![pr_number as i64, id],
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn update_issue_decomp_comment(
+    pub fn update_issue_spec_comment(
         &self,
         id: i64,
         comment_id: u64,
     ) -> Result<(), HammurabiError> {
         self.conn()
             .execute(
-                "UPDATE issues SET decomposition_comment_id = ?1, updated_at = datetime('now') WHERE id = ?2",
+                "UPDATE issues SET spec_comment_id = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![comment_id as i64, id],
+            )
+            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_issue_spec_content(
+        &self,
+        id: i64,
+        spec_content: &str,
+    ) -> Result<(), HammurabiError> {
+        self.conn()
+            .execute(
+                "UPDATE issues SET spec_content = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![spec_content, id],
+            )
+            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_issue_impl_pr(
+        &self,
+        id: i64,
+        pr_number: u64,
+    ) -> Result<(), HammurabiError> {
+        self.conn()
+            .execute(
+                "UPDATE issues SET impl_pr_number = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![pr_number as i64, id],
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
         Ok(())
@@ -248,124 +302,6 @@ impl Database {
             .execute(
                 "UPDATE issues SET worktree_path = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![path, id],
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    // --- Sub-issues ---
-
-    pub fn insert_sub_issue(
-        &self,
-        parent_issue_id: i64,
-        title: &str,
-        description: &str,
-    ) -> Result<i64, HammurabiError> {
-        let conn = self.conn();
-        conn.execute(
-                "INSERT INTO sub_issues (parent_issue_id, title, description) VALUES (?1, ?2, ?3)",
-                params![parent_issue_id, title, description],
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    pub fn get_sub_issues(&self, parent_issue_id: i64) -> Result<Vec<SubIssue>, HammurabiError> {
-        let conn = self.conn();
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, parent_issue_id, github_issue_number, title, description,
-                        state, pr_number, worktree_path, session_id
-                 FROM sub_issues WHERE parent_issue_id = ?1",
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-
-        let sub_issues = stmt
-            .query_map(params![parent_issue_id], |row| {
-                Ok(row_to_sub_issue(row))
-            })
-            .map_err(|e| HammurabiError::Database(e.to_string()))?
-            .collect::<SqlResult<Vec<_>>>()
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-
-        Ok(sub_issues)
-    }
-
-    pub fn update_sub_issue_state(
-        &self,
-        id: i64,
-        state: SubIssueState,
-    ) -> Result<(), HammurabiError> {
-        self.conn()
-            .execute(
-                "UPDATE sub_issues SET state = ?1 WHERE id = ?2",
-                params![state.to_string(), id],
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn update_sub_issue_github_number(
-        &self,
-        id: i64,
-        github_issue_number: u64,
-    ) -> Result<(), HammurabiError> {
-        self.conn()
-            .execute(
-                "UPDATE sub_issues SET github_issue_number = ?1 WHERE id = ?2",
-                params![github_issue_number as i64, id],
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn update_sub_issue_pr(
-        &self,
-        id: i64,
-        pr_number: u64,
-    ) -> Result<(), HammurabiError> {
-        self.conn()
-            .execute(
-                "UPDATE sub_issues SET pr_number = ?1 WHERE id = ?2",
-                params![pr_number as i64, id],
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn update_sub_issue_worktree(
-        &self,
-        id: i64,
-        path: Option<&str>,
-    ) -> Result<(), HammurabiError> {
-        self.conn()
-            .execute(
-                "UPDATE sub_issues SET worktree_path = ?1 WHERE id = ?2",
-                params![path, id],
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn update_sub_issue_session(
-        &self,
-        id: i64,
-        session_id: Option<&str>,
-    ) -> Result<(), HammurabiError> {
-        self.conn()
-            .execute(
-                "UPDATE sub_issues SET session_id = ?1 WHERE id = ?2",
-                params![session_id, id],
-            )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    pub fn reset_failed_sub_issues(&self, parent_issue_id: i64) -> Result<(), HammurabiError> {
-        self.conn()
-            .execute(
-                "UPDATE sub_issues SET state = 'pending', worktree_path = NULL, session_id = NULL WHERE parent_issue_id = ?1 AND state = 'failed'",
-                params![parent_issue_id],
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
         Ok(())
@@ -439,35 +375,18 @@ fn row_to_tracked_issue(row: &rusqlite::Row) -> TrackedIssue {
             .unwrap()
             .parse()
             .unwrap_or(IssueState::Failed),
-        spec_pr_number: row.get::<_, Option<i64>>(4).unwrap().map(|v| v as u64),
-        decomposition_comment_id: row.get::<_, Option<i64>>(5).unwrap().map(|v| v as u64),
-        last_comment_id: row.get::<_, Option<i64>>(6).unwrap().map(|v| v as u64),
+        spec_comment_id: row.get::<_, Option<i64>>(4).unwrap().map(|v| v as u64),
+        spec_content: row.get(5).unwrap(),
+        impl_pr_number: row.get::<_, Option<i64>>(6).unwrap().map(|v| v as u64),
+        last_comment_id: row.get::<_, Option<i64>>(7).unwrap().map(|v| v as u64),
         previous_state: row
-            .get::<_, Option<String>>(7)
+            .get::<_, Option<String>>(8)
             .unwrap()
             .and_then(|s| s.parse().ok()),
-        error_message: row.get(8).unwrap(),
-        worktree_path: row.get(9).unwrap(),
-        created_at: row.get(10).unwrap(),
-        updated_at: row.get(11).unwrap(),
-    }
-}
-
-fn row_to_sub_issue(row: &rusqlite::Row) -> SubIssue {
-    SubIssue {
-        id: row.get(0).unwrap(),
-        parent_issue_id: row.get(1).unwrap(),
-        github_issue_number: row.get::<_, Option<i64>>(2).unwrap().map(|v| v as u64),
-        title: row.get(3).unwrap(),
-        description: row.get(4).unwrap(),
-        state: row
-            .get::<_, String>(5)
-            .unwrap()
-            .parse()
-            .unwrap_or(SubIssueState::Failed),
-        pr_number: row.get::<_, Option<i64>>(6).unwrap().map(|v| v as u64),
-        worktree_path: row.get(7).unwrap(),
-        session_id: row.get(8).unwrap(),
+        error_message: row.get(9).unwrap(),
+        worktree_path: row.get(10).unwrap(),
+        created_at: row.get(11).unwrap(),
+        updated_at: row.get(12).unwrap(),
     }
 }
 
@@ -503,7 +422,9 @@ mod tests {
         assert_eq!(issue.github_issue_number, 42);
         assert_eq!(issue.title, "Test issue");
         assert_eq!(issue.state, IssueState::Discovered);
-        assert!(issue.spec_pr_number.is_none());
+        assert!(issue.spec_comment_id.is_none());
+        assert!(issue.impl_pr_number.is_none());
+        assert!(issue.spec_content.is_none());
         assert!(issue.previous_state.is_none());
         assert!(issue.error_message.is_none());
     }
@@ -542,15 +463,40 @@ mod tests {
     }
 
     #[test]
-    fn test_update_issue_spec_pr() {
+    fn test_update_issue_spec_comment() {
         let db = test_db();
         db.insert_issue(1, "Issue 1").unwrap();
         let issue = db.get_issue(1).unwrap().unwrap();
 
-        db.update_issue_spec_pr(issue.id, 100).unwrap();
+        db.update_issue_spec_comment(issue.id, 100).unwrap();
 
         let updated = db.get_issue(1).unwrap().unwrap();
-        assert_eq!(updated.spec_pr_number, Some(100));
+        assert_eq!(updated.spec_comment_id, Some(100));
+    }
+
+    #[test]
+    fn test_update_issue_spec_content() {
+        let db = test_db();
+        db.insert_issue(1, "Issue 1").unwrap();
+        let issue = db.get_issue(1).unwrap().unwrap();
+
+        db.update_issue_spec_content(issue.id, "# Spec\nDo the thing")
+            .unwrap();
+
+        let updated = db.get_issue(1).unwrap().unwrap();
+        assert_eq!(updated.spec_content.as_deref(), Some("# Spec\nDo the thing"));
+    }
+
+    #[test]
+    fn test_update_issue_impl_pr() {
+        let db = test_db();
+        db.insert_issue(1, "Issue 1").unwrap();
+        let issue = db.get_issue(1).unwrap().unwrap();
+
+        db.update_issue_impl_pr(issue.id, 200).unwrap();
+
+        let updated = db.get_issue(1).unwrap().unwrap();
+        assert_eq!(updated.impl_pr_number, Some(200));
     }
 
     #[test]
@@ -583,57 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_and_get_sub_issues() {
-        let db = test_db();
-        db.insert_issue(1, "Parent").unwrap();
-        let parent = db.get_issue(1).unwrap().unwrap();
-
-        let sub_id1 = db
-            .insert_sub_issue(parent.id, "Sub 1", "Do thing 1")
-            .unwrap();
-        let sub_id2 = db
-            .insert_sub_issue(parent.id, "Sub 2", "Do thing 2")
-            .unwrap();
-
-        let subs = db.get_sub_issues(parent.id).unwrap();
-        assert_eq!(subs.len(), 2);
-        assert_eq!(subs[0].title, "Sub 1");
-        assert_eq!(subs[0].description, "Do thing 1");
-        assert_eq!(subs[0].state, SubIssueState::Pending);
-        assert_eq!(subs[1].title, "Sub 2");
-
-        db.update_sub_issue_state(sub_id1, SubIssueState::Working)
-            .unwrap();
-        db.update_sub_issue_pr(sub_id2, 200).unwrap();
-
-        let subs = db.get_sub_issues(parent.id).unwrap();
-        assert_eq!(subs[0].state, SubIssueState::Working);
-        assert_eq!(subs[1].pr_number, Some(200));
-    }
-
-    #[test]
-    fn test_reset_failed_sub_issues() {
-        let db = test_db();
-        db.insert_issue(1, "Parent").unwrap();
-        let parent = db.get_issue(1).unwrap().unwrap();
-
-        let sub1 = db.insert_sub_issue(parent.id, "Sub 1", "").unwrap();
-        let sub2 = db.insert_sub_issue(parent.id, "Sub 2", "").unwrap();
-        let sub3 = db.insert_sub_issue(parent.id, "Sub 3", "").unwrap();
-
-        db.update_sub_issue_state(sub1, SubIssueState::Done).unwrap();
-        db.update_sub_issue_state(sub2, SubIssueState::Failed).unwrap();
-        db.update_sub_issue_state(sub3, SubIssueState::PrOpen).unwrap();
-
-        db.reset_failed_sub_issues(parent.id).unwrap();
-
-        let subs = db.get_sub_issues(parent.id).unwrap();
-        assert_eq!(subs[0].state, SubIssueState::Done);
-        assert_eq!(subs[1].state, SubIssueState::Pending);
-        assert_eq!(subs[2].state, SubIssueState::PrOpen);
-    }
-
-    #[test]
     fn test_usage_log() {
         let db = test_db();
         db.insert_issue(1, "Issue 1").unwrap();
@@ -641,7 +536,7 @@ mod tests {
 
         db.log_usage(issue.id, None, "spec_drafting", 1000, 2000, "claude-sonnet-4-6")
             .unwrap();
-        db.log_usage(issue.id, None, "decomposing", 500, 800, "claude-sonnet-4-6")
+        db.log_usage(issue.id, None, "implementing", 500, 800, "claude-sonnet-4-6")
             .unwrap();
 
         let usage = db.get_usage_by_issue(issue.id).unwrap();
@@ -650,25 +545,7 @@ mod tests {
         assert_eq!(usage[0].input_tokens, 1000);
         assert_eq!(usage[0].output_tokens, 2000);
         assert_eq!(usage[0].model, "claude-sonnet-4-6");
-        assert_eq!(usage[1].transition, "decomposing");
-    }
-
-    #[test]
-    fn test_update_sub_issue_session() {
-        let db = test_db();
-        db.insert_issue(1, "Parent").unwrap();
-        let parent = db.get_issue(1).unwrap().unwrap();
-        let sub_id = db.insert_sub_issue(parent.id, "Sub 1", "").unwrap();
-
-        db.update_sub_issue_session(sub_id, Some("session-abc-123"))
-            .unwrap();
-
-        let subs = db.get_sub_issues(parent.id).unwrap();
-        assert_eq!(subs[0].session_id.as_deref(), Some("session-abc-123"));
-
-        db.update_sub_issue_session(sub_id, None).unwrap();
-        let subs = db.get_sub_issues(parent.id).unwrap();
-        assert!(subs[0].session_id.is_none());
+        assert_eq!(usage[1].transition, "implementing");
     }
 
     #[test]
@@ -699,16 +576,16 @@ mod tests {
     }
 
     #[test]
-    fn test_decomp_comment_and_last_comment() {
+    fn test_spec_comment_and_last_comment() {
         let db = test_db();
         db.insert_issue(1, "Issue 1").unwrap();
         let issue = db.get_issue(1).unwrap().unwrap();
 
-        db.update_issue_decomp_comment(issue.id, 555).unwrap();
+        db.update_issue_spec_comment(issue.id, 555).unwrap();
         db.update_issue_last_comment(issue.id, 600).unwrap();
 
         let updated = db.get_issue(1).unwrap().unwrap();
-        assert_eq!(updated.decomposition_comment_id, Some(555));
+        assert_eq!(updated.spec_comment_id, Some(555));
         assert_eq!(updated.last_comment_id, Some(600));
     }
 }

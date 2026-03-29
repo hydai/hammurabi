@@ -1,12 +1,8 @@
 //! Integration test: full happy-path lifecycle
-//! Discovered → SpecDrafting → AwaitSpecApproval → Decomposing →
-//! AwaitDecompApproval → AgentsWorking → AwaitSubPRApprovals → Done
+//! Discovered → SpecDrafting → AwaitSpecApproval → Implementing →
+//! AwaitPRApproval → Done
 
 use std::sync::Arc;
-
-// Re-use the library's types by importing from the binary crate
-// Since this is a binary crate, we need to build tests as part of it.
-// Instead, we replicate the key flows using the modules directly.
 
 #[path = "../src/approval.rs"]
 mod approval;
@@ -37,7 +33,7 @@ use config::Config;
 use db::Database;
 use github::mock::MockGitHubClient;
 use github::{GitHubComment, GitHubIssue, PrStatus};
-use models::{IssueState, SubIssueState};
+use models::IssueState;
 use transitions::TransitionContext;
 use worktree::mock::MockWorktreeManager;
 
@@ -47,7 +43,6 @@ fn test_config() -> Config {
         owner: "owner".to_string(),
         repo_name: "repo".to_string(),
         poll_interval: 60,
-        max_concurrent_agents: 3,
         tracking_label: "hammurabi".to_string(),
         stale_timeout_days: 7,
         api_retry_count: 3,
@@ -57,7 +52,6 @@ fn test_config() -> Config {
         approvers: vec!["alice".to_string()],
         github_auth: crate::config::GitHubAuth::Token("token".to_string()),
         spec: None,
-        decompose: None,
         implement: None,
     }
 }
@@ -77,16 +71,6 @@ async fn test_full_lifecycle() {
     });
 
     let ai = Arc::new(MockAiAgent::new());
-    // Decomposition response (checked first since decomp prompts also contain "spec")
-    ai.set_response(
-        "independently-implementable sub-tasks",
-        AiResult {
-            content: r#"[{"title": "Add user model", "description": "Create User struct"}, {"title": "Add login endpoint", "description": "POST /login"}]"#.to_string(),
-            session_id: None,
-            input_tokens: 200,
-            output_tokens: 100,
-        },
-    );
     // Spec drafting response
     ai.set_response(
         "producing a SPEC.md",
@@ -122,39 +106,17 @@ async fn test_full_lifecycle() {
     let issue = db.get_issue(1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::Discovered);
 
-    // Phase 2: Spec drafting
-    gh.set_file_content("hammurabi/1-spec", "SPEC.md", "# SPEC\n\nAuth");
-    transitions::spec_drafting::execute(&ctx, &issue).await.unwrap();
+    // Phase 2: Spec drafting — posts spec as comment
+    transitions::spec_drafting::execute(&ctx, &issue, None)
+        .await
+        .unwrap();
 
     let issue = db.get_issue(1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::AwaitSpecApproval);
-    assert!(issue.spec_pr_number.is_some());
-    let spec_pr = issue.spec_pr_number.unwrap();
+    assert!(issue.spec_comment_id.is_some());
+    assert!(issue.spec_content.is_some());
 
-    // Phase 3: Merge spec PR
-    gh.set_pr_status(spec_pr, PrStatus::Merged);
-    let result = approval::check_spec_approval(&*ctx.github, spec_pr)
-        .await
-        .unwrap();
-    assert_eq!(result, approval::SpecApprovalResult::Approved);
-
-    // Transition to Decomposing
-    db.update_issue_state(issue.id, IssueState::Decomposing, Some(IssueState::AwaitSpecApproval))
-        .unwrap();
-
-    // Phase 4: Decomposition
-    let issue = db.get_issue(1).unwrap().unwrap();
-    transitions::decomposing::execute(&ctx, &issue, None)
-        .await
-        .unwrap();
-
-    let issue = db.get_issue(1).unwrap().unwrap();
-    assert_eq!(issue.state, IssueState::AwaitDecompApproval);
-    let subs = db.get_sub_issues(issue.id).unwrap();
-    assert_eq!(subs.len(), 2);
-
-    // Phase 5: Approve decomposition
-    // Use an ID higher than the mock's next_comment_id (starts at 1000 + comments already posted)
+    // Phase 3: Approve spec via /approve comment
     gh.add_comment(
         1,
         GitHubComment {
@@ -163,7 +125,7 @@ async fn test_full_lifecycle() {
             user_login: "alice".to_string(),
         },
     );
-    let result = approval::check_decomp_approval(
+    let result = approval::check_comment_approval(
         &*ctx.github,
         1,
         issue.last_comment_id,
@@ -171,34 +133,32 @@ async fn test_full_lifecycle() {
     )
     .await
     .unwrap();
-    assert!(matches!(result, approval::DecompApprovalResult::Approved { .. }));
+    assert!(matches!(
+        result,
+        approval::CommentApprovalResult::Approved { .. }
+    ));
 
-    // Transition to AgentsWorking
+    // Transition to Implementing
     db.update_issue_state(
         issue.id,
-        IssueState::AgentsWorking,
-        Some(IssueState::AwaitDecompApproval),
+        IssueState::Implementing,
+        Some(IssueState::AwaitSpecApproval),
     )
     .unwrap();
 
-    // Phase 6: Run agents
+    // Phase 4: Implementation — creates single PR
     let issue = db.get_issue(1).unwrap().unwrap();
-    transitions::agents_working::execute(&ctx, &issue)
+    transitions::implementing::execute(&ctx, &issue)
         .await
         .unwrap();
 
     let issue = db.get_issue(1).unwrap().unwrap();
-    assert_eq!(issue.state, IssueState::AwaitSubPRApprovals);
+    assert_eq!(issue.state, IssueState::AwaitPRApproval);
+    assert!(issue.impl_pr_number.is_some());
+    let impl_pr = issue.impl_pr_number.unwrap();
 
-    let subs = db.get_sub_issues(issue.id).unwrap();
-    assert!(subs.iter().all(|s| s.state == SubIssueState::PrOpen));
-    assert!(subs.iter().all(|s| s.pr_number.is_some()));
-
-    // Phase 7: Merge all sub-PRs
-    for sub in &subs {
-        gh.set_pr_status(sub.pr_number.unwrap(), PrStatus::Merged);
-    }
-
+    // Phase 5: Merge implementation PR
+    gh.set_pr_status(impl_pr, PrStatus::Merged);
     transitions::completion::check(&ctx, &issue).await.unwrap();
 
     let issue = db.get_issue(1).unwrap().unwrap();
@@ -206,7 +166,7 @@ async fn test_full_lifecycle() {
 
     // Verify usage was logged
     let usage = db.get_usage_by_issue(issue.id).unwrap();
-    assert!(usage.len() >= 3); // spec + decompose + 2 implementations
+    assert!(usage.len() >= 2); // spec + implementation
 
     let _ = tokio::fs::remove_dir_all(&tmp).await;
 }

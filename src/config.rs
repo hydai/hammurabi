@@ -31,7 +31,6 @@ pub struct AiTaskConfig {
 struct RawConfig {
     repo: Option<String>,
     poll_interval: Option<u64>,
-    max_concurrent_agents: Option<usize>,
     tracking_label: Option<String>,
     stale_timeout_days: Option<u64>,
     api_retry_count: Option<u32>,
@@ -42,7 +41,6 @@ struct RawConfig {
     github_token: Option<String>,
     github_app: Option<RawGitHubAppConfig>,
     spec: Option<AiTaskConfig>,
-    decompose: Option<AiTaskConfig>,
     implement: Option<AiTaskConfig>,
 }
 
@@ -52,7 +50,6 @@ pub struct Config {
     pub owner: String,
     pub repo_name: String,
     pub poll_interval: u64,
-    pub max_concurrent_agents: usize,
     pub tracking_label: String,
     pub stale_timeout_days: u64,
     pub api_retry_count: u32,
@@ -62,7 +59,6 @@ pub struct Config {
     pub approvers: Vec<String>,
     pub github_auth: GitHubAuth,
     pub spec: Option<AiTaskConfig>,
-    pub decompose: Option<AiTaskConfig>,
     pub implement: Option<AiTaskConfig>,
 }
 
@@ -70,7 +66,7 @@ impl Config {
     pub fn ai_model_for_task(&self, task: &str) -> &str {
         let override_model = match task {
             "spec" => self.spec.as_ref().and_then(|c| c.ai_model.as_deref()),
-            "decompose" => self.decompose.as_ref().and_then(|c| c.ai_model.as_deref()),
+
             "implement" => self.implement.as_ref().and_then(|c| c.ai_model.as_deref()),
             _ => None,
         };
@@ -80,7 +76,7 @@ impl Config {
     pub fn ai_max_turns_for_task(&self, task: &str) -> u32 {
         let override_turns = match task {
             "spec" => self.spec.as_ref().and_then(|c| c.ai_max_turns),
-            "decompose" => self.decompose.as_ref().and_then(|c| c.ai_max_turns),
+
             "implement" => self.implement.as_ref().and_then(|c| c.ai_max_turns),
             _ => None,
         };
@@ -90,7 +86,7 @@ impl Config {
     pub fn ai_effort_for_task(&self, task: &str) -> &str {
         let override_effort = match task {
             "spec" => self.spec.as_ref().and_then(|c| c.ai_effort.as_deref()),
-            "decompose" => self.decompose.as_ref().and_then(|c| c.ai_effort.as_deref()),
+
             "implement" => self.implement.as_ref().and_then(|c| c.ai_effort.as_deref()),
             _ => None,
         };
@@ -155,7 +151,6 @@ pub fn load() -> Result<Config, HammurabiError> {
         RawConfig {
             repo: None,
             poll_interval: None,
-            max_concurrent_agents: None,
             tracking_label: None,
             stale_timeout_days: None,
             api_retry_count: None,
@@ -166,7 +161,6 @@ pub fn load() -> Result<Config, HammurabiError> {
             github_token: None,
             github_app: None,
             spec: None,
-            decompose: None,
             implement: None,
         }
     };
@@ -179,9 +173,6 @@ pub fn load() -> Result<Config, HammurabiError> {
 
     let mut poll_interval = raw.poll_interval.unwrap_or(60);
     env_override("poll_interval", &mut poll_interval);
-
-    let mut max_concurrent_agents = raw.max_concurrent_agents.unwrap_or(3);
-    env_override("max_concurrent_agents", &mut max_concurrent_agents);
 
     let mut tracking_label = raw
         .tracking_label
@@ -297,7 +288,6 @@ pub fn load() -> Result<Config, HammurabiError> {
         owner: owner.to_string(),
         repo_name: repo_name.to_string(),
         poll_interval,
-        max_concurrent_agents,
         tracking_label,
         stale_timeout_days,
         api_retry_count,
@@ -307,7 +297,6 @@ pub fn load() -> Result<Config, HammurabiError> {
         approvers,
         github_auth,
         spec: raw.spec,
-        decompose: raw.decompose,
         implement: raw.implement,
     })
 }
@@ -346,7 +335,6 @@ mod tests {
             owner: owner.to_string(),
             repo_name: repo_name.to_string(),
             poll_interval: raw.poll_interval.unwrap_or(60),
-            max_concurrent_agents: raw.max_concurrent_agents.unwrap_or(3),
             tracking_label: raw
                 .tracking_label
                 .unwrap_or_else(|| "hammurabi".to_string()),
@@ -358,7 +346,6 @@ mod tests {
             approvers,
             github_auth,
             spec: raw.spec,
-            decompose: raw.decompose,
             implement: raw.implement,
         })
     }
@@ -378,7 +365,6 @@ mod tests {
         assert_eq!(config.ai_model, "claude-sonnet-4-6");
         assert_eq!(config.approvers, vec!["alice"]);
         assert_eq!(config.poll_interval, 60);
-        assert_eq!(config.max_concurrent_agents, 3);
         assert_eq!(config.tracking_label, "hammurabi");
         assert_eq!(config.stale_timeout_days, 7);
         assert_eq!(config.api_retry_count, 3);
@@ -438,15 +424,10 @@ mod tests {
             [spec]
             ai_model = "claude-opus-4-6"
             ai_max_turns = 100
-
-            [decompose]
-            ai_max_turns = 30
         "#;
         let config = parse_raw(toml).unwrap();
         assert_eq!(config.ai_model_for_task("spec"), "claude-opus-4-6");
         assert_eq!(config.ai_max_turns_for_task("spec"), 100);
-        assert_eq!(config.ai_model_for_task("decompose"), "claude-sonnet-4-6");
-        assert_eq!(config.ai_max_turns_for_task("decompose"), 30);
         assert_eq!(config.ai_model_for_task("implement"), "claude-sonnet-4-6");
         assert_eq!(config.ai_max_turns_for_task("implement"), 50);
     }
@@ -456,7 +437,6 @@ mod tests {
         let toml = r#"
             repo = "org/project"
             poll_interval = 120
-            max_concurrent_agents = 5
             tracking_label = "auto"
             stale_timeout_days = 14
             api_retry_count = 5
@@ -467,7 +447,6 @@ mod tests {
         "#;
         let config = parse_raw(toml).unwrap();
         assert_eq!(config.poll_interval, 120);
-        assert_eq!(config.max_concurrent_agents, 5);
         assert_eq!(config.tracking_label, "auto");
         assert_eq!(config.stale_timeout_days, 14);
         assert_eq!(config.api_retry_count, 5);

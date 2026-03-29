@@ -4,13 +4,10 @@ use crate::models::IssueState;
 #[derive(Debug, Clone)]
 pub enum Event {
     PollCycleActive,
-    SpecPrMerged,
-    SpecPrClosedWithoutMerge,
-    DecompApproved,
-    DecompFeedback { body: String },
-    AllAgentsDone { any_failed: bool },
-    AllSubPrsMerged,
-    SubPrClosedWithoutMerge,
+    SpecApproved,
+    SpecFeedback { body: String },
+    PrMerged,
+    PrClosedWithoutMerge,
     TransitionError { message: String },
     RetryRequested,
     ResetRequested,
@@ -23,11 +20,10 @@ pub enum SideEffect {
         new_state: IssueState,
         previous_state: Option<IssueState>,
     },
-    ExecuteSpecDrafting,
-    ExecuteDecomposing {
+    ExecuteSpecDrafting {
         feedback: Option<String>,
     },
-    ExecuteAgentWork,
+    ExecuteImplementation,
     PostComment {
         body: String,
     },
@@ -51,117 +47,63 @@ pub fn transition(
             SideEffect::PostComment {
                 body: "Starting spec generation...".to_string(),
             },
-            SideEffect::ExecuteSpecDrafting,
+            SideEffect::ExecuteSpecDrafting { feedback: None },
         ]),
 
         (IssueState::SpecDrafting, Event::PollCycleActive) => {
-            Ok(vec![SideEffect::ExecuteSpecDrafting])
+            Ok(vec![SideEffect::ExecuteSpecDrafting { feedback: None }])
         }
 
-        (IssueState::Decomposing, Event::PollCycleActive) => Ok(vec![
-            SideEffect::ExecuteDecomposing { feedback: None },
-        ]),
-
-        (IssueState::AgentsWorking, Event::PollCycleActive) => {
-            Ok(vec![SideEffect::ExecuteAgentWork])
+        (IssueState::Implementing, Event::PollCycleActive) => {
+            Ok(vec![SideEffect::ExecuteImplementation])
         }
 
-        // --- Blocking state approvals ---
-        (IssueState::AwaitSpecApproval, Event::SpecPrMerged) => Ok(vec![
+        // --- Spec approval (comment-based) ---
+        (IssueState::AwaitSpecApproval, Event::SpecApproved) => Ok(vec![
             SideEffect::UpdateState {
-                new_state: IssueState::Decomposing,
+                new_state: IssueState::Implementing,
                 previous_state: Some(IssueState::AwaitSpecApproval),
             },
             SideEffect::PostComment {
-                body: "Spec PR merged. Starting decomposition...".to_string(),
+                body: "Spec approved. Starting implementation...".to_string(),
             },
-            SideEffect::ExecuteDecomposing { feedback: None },
+            SideEffect::ExecuteImplementation,
         ]),
 
-        (IssueState::AwaitSpecApproval, Event::SpecPrClosedWithoutMerge) => Ok(vec![
+        (IssueState::AwaitSpecApproval, Event::SpecFeedback { body }) => Ok(vec![
             SideEffect::UpdateState {
-                new_state: IssueState::Failed,
+                new_state: IssueState::SpecDrafting,
                 previous_state: Some(IssueState::AwaitSpecApproval),
             },
-            SideEffect::SetError {
-                message: "Spec PR was closed without merge".to_string(),
-            },
             SideEffect::PostComment {
-                body: "Spec PR was closed without merge. Issue marked as failed. Use `/retry` to regenerate."
-                    .to_string(),
+                body: "Feedback received. Revising spec...".to_string(),
             },
-        ]),
-
-        (IssueState::AwaitDecompApproval, Event::DecompApproved) => Ok(vec![
-            SideEffect::UpdateState {
-                new_state: IssueState::AgentsWorking,
-                previous_state: Some(IssueState::AwaitDecompApproval),
-            },
-            SideEffect::PostComment {
-                body: "Decomposition approved. Spawning agents...".to_string(),
-            },
-            SideEffect::ExecuteAgentWork,
-        ]),
-
-        (IssueState::AwaitDecompApproval, Event::DecompFeedback { body }) => Ok(vec![
-            SideEffect::UpdateState {
-                new_state: IssueState::Decomposing,
-                previous_state: Some(IssueState::AwaitDecompApproval),
-            },
-            SideEffect::PostComment {
-                body: "Feedback received. Re-running decomposition...".to_string(),
-            },
-            SideEffect::ExecuteDecomposing {
+            SideEffect::ExecuteSpecDrafting {
                 feedback: Some(body.clone()),
             },
         ]),
 
-        // --- Agent completion ---
-        (IssueState::AgentsWorking, Event::AllAgentsDone { any_failed: false }) => Ok(vec![
-            SideEffect::UpdateState {
-                new_state: IssueState::AwaitSubPRApprovals,
-                previous_state: Some(IssueState::AgentsWorking),
-            },
-            SideEffect::PostComment {
-                body: "All agents completed. PRs open for review.".to_string(),
-            },
-        ]),
-
-        (IssueState::AgentsWorking, Event::AllAgentsDone { any_failed: true }) => Ok(vec![
-            SideEffect::UpdateState {
-                new_state: IssueState::Failed,
-                previous_state: Some(IssueState::AgentsWorking),
-            },
-            SideEffect::SetError {
-                message: "One or more agents failed".to_string(),
-            },
-            SideEffect::PostComment {
-                body: "One or more agents failed. Use `/retry` to re-run failed sub-issues."
-                    .to_string(),
-            },
-        ]),
-
-        // --- Sub-PR completion ---
-        (IssueState::AwaitSubPRApprovals, Event::AllSubPrsMerged) => Ok(vec![
+        // --- Implementation PR approval ---
+        (IssueState::AwaitPRApproval, Event::PrMerged) => Ok(vec![
             SideEffect::UpdateState {
                 new_state: IssueState::Done,
-                previous_state: Some(IssueState::AwaitSubPRApprovals),
+                previous_state: Some(IssueState::AwaitPRApproval),
             },
             SideEffect::PostComment {
-                body: "All sub-issue PRs merged. Issue complete!".to_string(),
+                body: "Implementation PR merged. Issue complete!".to_string(),
             },
         ]),
 
-        (IssueState::AwaitSubPRApprovals, Event::SubPrClosedWithoutMerge) => Ok(vec![
+        (IssueState::AwaitPRApproval, Event::PrClosedWithoutMerge) => Ok(vec![
             SideEffect::UpdateState {
                 new_state: IssueState::Failed,
-                previous_state: Some(IssueState::AwaitSubPRApprovals),
+                previous_state: Some(IssueState::AwaitPRApproval),
             },
             SideEffect::SetError {
-                message: "A sub-issue PR was closed without merge".to_string(),
+                message: "Implementation PR was closed without merge".to_string(),
             },
             SideEffect::PostComment {
-                body: "A sub-issue PR was closed without merge. Issue marked as failed. Use `/retry` to retry."
+                body: "Implementation PR was closed without merge. Issue marked as failed. Use `/retry` to retry."
                     .to_string(),
             },
         ]),
@@ -213,7 +155,7 @@ pub fn transition(
             },
         ]),
 
-        // --- Transition error from blocking states (e.g., PR closed) ---
+        // --- Transition error from blocking states ---
         (state, Event::TransitionError { message }) if state.is_blocking() => Ok(vec![
             SideEffect::UpdateState {
                 new_state: IssueState::Failed,
@@ -246,131 +188,72 @@ mod tests {
             new_state: IssueState::SpecDrafting,
             previous_state: Some(IssueState::Discovered),
         }));
-        assert!(effects.contains(&SideEffect::ExecuteSpecDrafting));
+        assert!(effects.contains(&SideEffect::ExecuteSpecDrafting { feedback: None }));
     }
 
     #[test]
     fn test_spec_drafting_poll() {
         let effects = transition(IssueState::SpecDrafting, Event::PollCycleActive, None).unwrap();
-        assert!(effects.contains(&SideEffect::ExecuteSpecDrafting));
+        assert!(effects.contains(&SideEffect::ExecuteSpecDrafting { feedback: None }));
     }
 
     #[test]
-    fn test_await_spec_approval_merged() {
+    fn test_implementing_poll() {
+        let effects = transition(IssueState::Implementing, Event::PollCycleActive, None).unwrap();
+        assert!(effects.contains(&SideEffect::ExecuteImplementation));
+    }
+
+    #[test]
+    fn test_await_spec_approved() {
         let effects =
-            transition(IssueState::AwaitSpecApproval, Event::SpecPrMerged, None).unwrap();
+            transition(IssueState::AwaitSpecApproval, Event::SpecApproved, None).unwrap();
         assert!(effects.contains(&SideEffect::UpdateState {
-            new_state: IssueState::Decomposing,
+            new_state: IssueState::Implementing,
             previous_state: Some(IssueState::AwaitSpecApproval),
         }));
-        assert!(effects.contains(&SideEffect::ExecuteDecomposing { feedback: None }));
+        assert!(effects.contains(&SideEffect::ExecuteImplementation));
     }
 
     #[test]
-    fn test_await_spec_approval_closed() {
+    fn test_await_spec_feedback() {
         let effects = transition(
             IssueState::AwaitSpecApproval,
-            Event::SpecPrClosedWithoutMerge,
-            None,
-        )
-        .unwrap();
-        assert!(effects.contains(&SideEffect::UpdateState {
-            new_state: IssueState::Failed,
-            previous_state: Some(IssueState::AwaitSpecApproval),
-        }));
-    }
-
-    #[test]
-    fn test_decomposing_poll() {
-        let effects = transition(IssueState::Decomposing, Event::PollCycleActive, None).unwrap();
-        assert!(effects.contains(&SideEffect::ExecuteDecomposing { feedback: None }));
-    }
-
-    #[test]
-    fn test_await_decomp_approved() {
-        let effects =
-            transition(IssueState::AwaitDecompApproval, Event::DecompApproved, None).unwrap();
-        assert!(effects.contains(&SideEffect::UpdateState {
-            new_state: IssueState::AgentsWorking,
-            previous_state: Some(IssueState::AwaitDecompApproval),
-        }));
-        assert!(effects.contains(&SideEffect::ExecuteAgentWork));
-    }
-
-    #[test]
-    fn test_await_decomp_feedback() {
-        let effects = transition(
-            IssueState::AwaitDecompApproval,
-            Event::DecompFeedback {
+            Event::SpecFeedback {
                 body: "add more detail".to_string(),
             },
             None,
         )
         .unwrap();
         assert!(effects.contains(&SideEffect::UpdateState {
-            new_state: IssueState::Decomposing,
-            previous_state: Some(IssueState::AwaitDecompApproval),
+            new_state: IssueState::SpecDrafting,
+            previous_state: Some(IssueState::AwaitSpecApproval),
         }));
-        assert!(effects.contains(&SideEffect::ExecuteDecomposing {
+        assert!(effects.contains(&SideEffect::ExecuteSpecDrafting {
             feedback: Some("add more detail".to_string()),
         }));
     }
 
     #[test]
-    fn test_agents_working_poll() {
-        let effects = transition(IssueState::AgentsWorking, Event::PollCycleActive, None).unwrap();
-        assert!(effects.contains(&SideEffect::ExecuteAgentWork));
-    }
-
-    #[test]
-    fn test_agents_done_success() {
-        let effects = transition(
-            IssueState::AgentsWorking,
-            Event::AllAgentsDone { any_failed: false },
-            None,
-        )
-        .unwrap();
-        assert!(effects.contains(&SideEffect::UpdateState {
-            new_state: IssueState::AwaitSubPRApprovals,
-            previous_state: Some(IssueState::AgentsWorking),
-        }));
-    }
-
-    #[test]
-    fn test_agents_done_failure() {
-        let effects = transition(
-            IssueState::AgentsWorking,
-            Event::AllAgentsDone { any_failed: true },
-            None,
-        )
-        .unwrap();
-        assert!(effects.contains(&SideEffect::UpdateState {
-            new_state: IssueState::Failed,
-            previous_state: Some(IssueState::AgentsWorking),
-        }));
-    }
-
-    #[test]
-    fn test_all_sub_prs_merged() {
+    fn test_pr_merged() {
         let effects =
-            transition(IssueState::AwaitSubPRApprovals, Event::AllSubPrsMerged, None).unwrap();
+            transition(IssueState::AwaitPRApproval, Event::PrMerged, None).unwrap();
         assert!(effects.contains(&SideEffect::UpdateState {
             new_state: IssueState::Done,
-            previous_state: Some(IssueState::AwaitSubPRApprovals),
+            previous_state: Some(IssueState::AwaitPRApproval),
         }));
     }
 
     #[test]
-    fn test_sub_pr_closed() {
+    fn test_pr_closed_without_merge() {
         let effects = transition(
-            IssueState::AwaitSubPRApprovals,
-            Event::SubPrClosedWithoutMerge,
+            IssueState::AwaitPRApproval,
+            Event::PrClosedWithoutMerge,
             None,
         )
         .unwrap();
         assert!(effects.contains(&SideEffect::UpdateState {
             new_state: IssueState::Failed,
-            previous_state: Some(IssueState::AwaitSubPRApprovals),
+            previous_state: Some(IssueState::AwaitPRApproval),
         }));
     }
 
@@ -400,10 +283,8 @@ mod tests {
             IssueState::Discovered,
             IssueState::SpecDrafting,
             IssueState::AwaitSpecApproval,
-            IssueState::Decomposing,
-            IssueState::AwaitDecompApproval,
-            IssueState::AgentsWorking,
-            IssueState::AwaitSubPRApprovals,
+            IssueState::Implementing,
+            IssueState::AwaitPRApproval,
             IssueState::Done,
             IssueState::Failed,
         ];
@@ -422,8 +303,8 @@ mod tests {
             IssueState::Discovered,
             IssueState::SpecDrafting,
             IssueState::AwaitSpecApproval,
-            IssueState::Decomposing,
-            IssueState::AgentsWorking,
+            IssueState::Implementing,
+            IssueState::AwaitPRApproval,
             IssueState::Failed,
         ];
         for state in &states {
@@ -455,6 +336,22 @@ mod tests {
     }
 
     #[test]
+    fn test_transition_error_blocking() {
+        let effects = transition(
+            IssueState::AwaitSpecApproval,
+            Event::TransitionError {
+                message: "api error".to_string(),
+            },
+            None,
+        )
+        .unwrap();
+        assert!(effects.contains(&SideEffect::UpdateState {
+            new_state: IssueState::Failed,
+            previous_state: Some(IssueState::AwaitSpecApproval),
+        }));
+    }
+
+    #[test]
     fn test_invalid_transition() {
         let result = transition(IssueState::Done, Event::PollCycleActive, None);
         assert!(result.is_err());
@@ -462,35 +359,35 @@ mod tests {
 
     #[test]
     fn test_feedback_loop_cycle() {
-        // AwaitDecompApproval → Decomposing (feedback) → would produce AwaitDecompApproval after execution
+        // AwaitSpecApproval → SpecDrafting (feedback)
         let effects = transition(
-            IssueState::AwaitDecompApproval,
-            Event::DecompFeedback {
+            IssueState::AwaitSpecApproval,
+            Event::SpecFeedback {
                 body: "needs more detail".to_string(),
             },
             None,
         )
         .unwrap();
         assert!(effects.contains(&SideEffect::UpdateState {
-            new_state: IssueState::Decomposing,
-            previous_state: Some(IssueState::AwaitDecompApproval),
+            new_state: IssueState::SpecDrafting,
+            previous_state: Some(IssueState::AwaitSpecApproval),
         }));
 
-        // Then decomposing can execute on poll
-        let effects = transition(IssueState::Decomposing, Event::PollCycleActive, None).unwrap();
-        assert!(effects.contains(&SideEffect::ExecuteDecomposing { feedback: None }));
+        // Then spec drafting can execute on poll
+        let effects = transition(IssueState::SpecDrafting, Event::PollCycleActive, None).unwrap();
+        assert!(effects.contains(&SideEffect::ExecuteSpecDrafting { feedback: None }));
     }
 
     #[test]
-    fn test_retry_from_failed_agents_working() {
+    fn test_retry_from_failed_implementing() {
         let effects = transition(
             IssueState::Failed,
             Event::RetryRequested,
-            Some(IssueState::AgentsWorking),
+            Some(IssueState::Implementing),
         )
         .unwrap();
         assert!(effects.contains(&SideEffect::UpdateState {
-            new_state: IssueState::AgentsWorking,
+            new_state: IssueState::Implementing,
             previous_state: None,
         }));
     }

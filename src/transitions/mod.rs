@@ -1,6 +1,5 @@
-pub mod agents_working;
 pub mod completion;
-pub mod decomposing;
+pub mod implementing;
 pub mod spec_drafting;
 
 use std::sync::Arc;
