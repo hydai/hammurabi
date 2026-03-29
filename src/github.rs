@@ -3,6 +3,19 @@ use serde::Deserialize;
 
 use crate::error::HammurabiError;
 
+/// Format an octocrab error by extracting the actual source error.
+///
+/// octocrab's `Error::GitHub` variant has a broken `Display` impl (snafu default)
+/// that just prints "GitHub". The real details are in `source()` -> `GitHubError`.
+fn format_octocrab_error(err: &octocrab::Error) -> String {
+    use std::error::Error;
+    if let Some(source) = err.source() {
+        source.to_string()
+    } else {
+        err.to_string()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GitHubIssue {
     pub number: u64,
@@ -90,7 +103,7 @@ impl OctocrabClient {
         let client = octocrab::Octocrab::builder()
             .personal_token(token.to_string())
             .build()
-            .map_err(|e| HammurabiError::GitHub(format!("failed to create GitHub client: {}", e)))?;
+            .map_err(|e| HammurabiError::GitHub(format!("failed to create GitHub client: {}", format_octocrab_error(&e))))?;
 
         Ok(Self {
             client,
@@ -151,7 +164,7 @@ impl GitHubClient for OctocrabClient {
                     .per_page(100)
                     .send()
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("list issues: {}", e)))?;
+                    .map_err(|e| HammurabiError::GitHub(format!("list issues: {}", format_octocrab_error(&e))))?;
 
                 Ok(page
                     .items
@@ -184,7 +197,7 @@ impl GitHubClient for OctocrabClient {
                     .issues(&owner, &repo)
                     .get(number)
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("get issue #{}: {}", number, e)))?;
+                    .map_err(|e| HammurabiError::GitHub(format!("get issue #{}: {}", number, format_octocrab_error(&e))))?;
 
                 Ok(GitHubIssue {
                     number: issue.number,
@@ -219,7 +232,7 @@ impl GitHubClient for OctocrabClient {
                     .send()
                     .await
                     .map_err(|e| {
-                        HammurabiError::GitHub(format!("list comments for #{}: {}", number, e))
+                        HammurabiError::GitHub(format!("list comments for #{}: {}", number, format_octocrab_error(&e)))
                     })?;
 
                 let comments: Vec<GitHubComment> = page
@@ -266,7 +279,7 @@ impl GitHubClient for OctocrabClient {
                     .create_comment(number, body)
                     .await
                     .map_err(|e| {
-                        HammurabiError::GitHub(format!("post comment on #{}: {}", number, e))
+                        HammurabiError::GitHub(format!("post comment on #{}: {}", number, format_octocrab_error(&e)))
                     })?;
 
                 Ok(comment.id.into_inner())
@@ -305,7 +318,7 @@ impl GitHubClient for OctocrabClient {
                     .body(&body)
                     .send()
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("create PR: {}", e)))?;
+                    .map_err(|e| HammurabiError::GitHub(format!("create PR: {}", format_octocrab_error(&e))))?;
 
                 Ok(pr.number)
             }
@@ -328,7 +341,7 @@ impl GitHubClient for OctocrabClient {
                     .get(pr_number)
                     .await
                     .map_err(|e| {
-                        HammurabiError::GitHub(format!("get PR #{}: {}", pr_number, e))
+                        HammurabiError::GitHub(format!("get PR #{}: {}", pr_number, format_octocrab_error(&e)))
                     })?;
 
                 if pr.merged_at.is_some() {
@@ -371,7 +384,7 @@ impl GitHubClient for OctocrabClient {
                     .labels(labels)
                     .send()
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("create issue: {}", e)))?;
+                    .map_err(|e| HammurabiError::GitHub(format!("create issue: {}", format_octocrab_error(&e))))?;
 
                 Ok(issue.number)
             }
@@ -393,7 +406,7 @@ impl GitHubClient for OctocrabClient {
                     .repos(&owner, &repo)
                     .get()
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("get repo info: {}", e)))?;
+                    .map_err(|e| HammurabiError::GitHub(format!("get repo info: {}", format_octocrab_error(&e))))?;
 
                 Ok(repo_info
                     .default_branch
@@ -429,7 +442,7 @@ impl GitHubClient for OctocrabClient {
                     .send()
                     .await
                     .map_err(|e| {
-                        HammurabiError::GitHub(format!("get file {}: {}", path, e))
+                        HammurabiError::GitHub(format!("get file {}: {}", path, format_octocrab_error(&e)))
                     })?;
 
                 match content.items.into_iter().next() {
@@ -476,7 +489,7 @@ impl GitHubClient for OctocrabClient {
                     .map_err(|e| {
                         HammurabiError::GitHub(format!(
                             "get events for #{}: {}",
-                            issue_number, e
+                            issue_number, format_octocrab_error(&e)
                         ))
                     })?;
 
