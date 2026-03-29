@@ -134,6 +134,22 @@ impl WorktreeManager for GitWorktreeManager {
         )
         .await?;
 
+        // Bare clones default to refspec +refs/heads/*:refs/heads/*, so
+        // "origin/main" doesn't resolve.  Reconfigure to the standard
+        // remote-tracking layout and fetch so create_worktree can use
+        // origin/<branch> as the start point.
+        self.run_git(
+            &["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            &self.bare_clone_path,
+        )
+        .await?;
+
+        self.run_git_authenticated(
+            &["fetch", "origin"],
+            &self.bare_clone_path,
+        )
+        .await?;
+
         Ok(self.bare_clone_path.clone())
     }
 
