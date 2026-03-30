@@ -84,7 +84,7 @@ mod tests {
             ai_max_turns: 50,
             ai_effort: "high".to_string(),
             ai_timeout_secs: 3600,
-            ai_stall_timeout_secs: 300,
+            ai_stall_timeout_secs: 0,
             ai_max_retries: 2,
             max_concurrent_agents: 5,
             hooks: crate::config::HooksConfig::default(),

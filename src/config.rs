@@ -243,7 +243,7 @@ pub fn load() -> Result<Config, HammurabiError> {
     let mut ai_timeout_secs = raw.ai_timeout_secs.unwrap_or(3600);
     env_override("ai_timeout_secs", &mut ai_timeout_secs);
 
-    let mut ai_stall_timeout_secs = raw.ai_stall_timeout_secs.unwrap_or(300);
+    let mut ai_stall_timeout_secs = raw.ai_stall_timeout_secs.unwrap_or(0);
     env_override("ai_stall_timeout_secs", &mut ai_stall_timeout_secs);
 
     let mut ai_max_retries = raw.ai_max_retries.unwrap_or(2);
@@ -405,7 +405,7 @@ mod tests {
             ai_max_turns: raw.ai_max_turns.unwrap_or(50),
             ai_effort: raw.ai_effort.unwrap_or_else(|| "high".to_string()),
             ai_timeout_secs: raw.ai_timeout_secs.unwrap_or(3600),
-            ai_stall_timeout_secs: raw.ai_stall_timeout_secs.unwrap_or(300),
+            ai_stall_timeout_secs: raw.ai_stall_timeout_secs.unwrap_or(0),
             ai_max_retries: raw.ai_max_retries.unwrap_or(2),
             max_concurrent_agents: raw.max_concurrent_agents.unwrap_or(5),
             approvers,
@@ -530,7 +530,7 @@ mod tests {
         "#;
         let config = parse_raw(toml).unwrap();
         assert_eq!(config.ai_timeout_secs, 3600);
-        assert_eq!(config.ai_stall_timeout_secs, 300);
+        assert_eq!(config.ai_stall_timeout_secs, 0);
         assert_eq!(config.ai_max_retries, 2);
     }
 

@@ -85,7 +85,7 @@ Config is loaded from `./hammurabi.toml` or `~/.config/hammurabi/hammurabi.toml`
 | `api_retry_count` | `3` | Max retries for GitHub API calls |
 | `ai_max_turns` | `50` | Max conversation turns per AI invocation |
 | `ai_timeout_secs` | `3600` | Max total seconds per AI invocation |
-| `ai_stall_timeout_secs` | `300` | Kill AI if no output for this many seconds |
+| `ai_stall_timeout_secs` | `0` (disabled) | Kill AI if no output for this many seconds; 0 = disabled |
 | `ai_max_retries` | `2` | Auto-retries before transitioning to Failed |
 | `github_token` | -- | Falls back to `GITHUB_TOKEN` env var |
 

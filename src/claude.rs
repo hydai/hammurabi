@@ -74,6 +74,7 @@ impl AiAgent for ClaudeCliAgent {
         })?;
 
         let overall_deadline = Instant::now() + Duration::from_secs(invocation.timeout_secs);
+        let stall_enabled = invocation.stall_timeout_secs > 0;
         let stall_duration = Duration::from_secs(invocation.stall_timeout_secs);
         let mut reader = BufReader::new(stdout).lines();
         let mut collected_lines = Vec::new();
@@ -89,8 +90,12 @@ impl AiAgent for ClaudeCliAgent {
                 )));
             }
 
-            // Use the smaller of stall timeout and remaining overall time
-            let line_timeout = stall_duration.min(remaining);
+            // Use stall timeout if enabled, otherwise just the remaining overall time
+            let line_timeout = if stall_enabled {
+                stall_duration.min(remaining)
+            } else {
+                remaining
+            };
 
             match timeout(line_timeout, reader.next_line()).await {
                 Ok(Ok(Some(line))) => {
