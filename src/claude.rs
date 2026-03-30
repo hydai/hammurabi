@@ -184,12 +184,15 @@ pub fn parse_stream_json(output: &str) -> Result<AiResult, HammurabiError> {
         if let Some(msg_type) = parsed.get("type").and_then(|v| v.as_str()) {
             match msg_type {
                 "assistant" => {
-                    if let Some(content) = parsed.get("content") {
-                        if let Some(arr) = content.as_array() {
-                            for block in arr {
-                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                    content_parts.push(text.to_string());
-                                }
+                    // Content is nested: parsed["message"]["content"] or parsed["content"]
+                    let content = parsed
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .or_else(|| parsed.get("content"));
+                    if let Some(arr) = content.and_then(|c| c.as_array()) {
+                        for block in arr {
+                            if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                content_parts.push(text.to_string());
                             }
                         }
                     }
@@ -210,8 +213,12 @@ pub fn parse_stream_json(output: &str) -> Result<AiResult, HammurabiError> {
             }
         }
 
-        // Extract usage from any message that has it
-        if let Some(usage) = parsed.get("usage") {
+        // Extract usage: check parsed["message"]["usage"] then parsed["usage"]
+        let usage = parsed
+            .get("message")
+            .and_then(|m| m.get("usage"))
+            .or_else(|| parsed.get("usage"));
+        if let Some(usage) = usage {
             if let Some(inp) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                 input_tokens = inp;
             }
@@ -295,12 +302,21 @@ mod tests {
 
     #[test]
     fn test_parse_stream_json_assistant_message() {
-        let output = r#"{"type":"assistant","content":[{"type":"text","text":"Hello, world!"}],"usage":{"input_tokens":100,"output_tokens":50},"session_id":"sess-123"}"#;
+        // Actual Claude CLI format: content nested under "message"
+        let output = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello, world!"}],"usage":{"input_tokens":100,"output_tokens":50}},"session_id":"sess-123"}"#;
         let result = parse_stream_json(output).unwrap();
         assert_eq!(result.content, "Hello, world!");
         assert_eq!(result.session_id, Some("sess-123".to_string()));
         assert_eq!(result.input_tokens, 100);
         assert_eq!(result.output_tokens, 50);
+    }
+
+    #[test]
+    fn test_parse_stream_json_assistant_flat_format() {
+        // Also support flat format for backward compatibility
+        let output = r#"{"type":"assistant","content":[{"type":"text","text":"Hello!"}],"usage":{"input_tokens":10,"output_tokens":5},"session_id":"s1"}"#;
+        let result = parse_stream_json(output).unwrap();
+        assert_eq!(result.content, "Hello!");
     }
 
     #[test]
@@ -316,8 +332,8 @@ mod tests {
     #[test]
     fn test_parse_stream_json_multiple_lines() {
         let output = [
-            r#"{"type":"assistant","content":[{"type":"text","text":"Part 1"}],"usage":{"input_tokens":50,"output_tokens":25}}"#,
-            r#"{"type":"assistant","content":[{"type":"text","text":" Part 2"}],"usage":{"input_tokens":100,"output_tokens":50}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Part 1"}],"usage":{"input_tokens":50,"output_tokens":25}}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":" Part 2"}],"usage":{"input_tokens":100,"output_tokens":50}}}"#,
             r#"{"type":"result","session_id":"sess-789","usage":{"input_tokens":150,"output_tokens":75}}"#,
         ]
         .join("\n");
@@ -347,7 +363,7 @@ mod tests {
     fn test_parse_stream_json_unparseable_lines_skipped() {
         let output = [
             "not json at all",
-            r#"{"type":"assistant","content":[{"type":"text","text":"Valid content"}],"usage":{"input_tokens":10,"output_tokens":5}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Valid content"}],"usage":{"input_tokens":10,"output_tokens":5}}}"#,
             "another bad line",
         ]
         .join("\n");
@@ -359,7 +375,7 @@ mod tests {
     #[test]
     fn test_token_aggregation() {
         let output = [
-            r#"{"type":"assistant","content":[{"type":"text","text":"A"}],"usage":{"input_tokens":10,"output_tokens":5}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"A"}],"usage":{"input_tokens":10,"output_tokens":5}}}"#,
             r#"{"type":"result","session_id":"s1","usage":{"input_tokens":100,"output_tokens":50}}"#,
         ]
         .join("\n");
