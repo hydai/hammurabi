@@ -89,6 +89,20 @@ pub async fn execute(
 
     let result = ai_result?;
 
+    // Log AI output for debugging
+    tracing::info!(
+        issue = issue.github_issue_number,
+        input_tokens = result.input_tokens,
+        output_tokens = result.output_tokens,
+        content_len = result.content.len(),
+        "AI invocation complete"
+    );
+    tracing::debug!(
+        issue = issue.github_issue_number,
+        content = %result.content,
+        "AI output content"
+    );
+
     // Log usage
     ctx.db.log_usage(
         issue.id,

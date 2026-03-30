@@ -120,6 +120,20 @@ pub async fn execute(
 
     let result = ai_result?;
 
+    // Log AI output for debugging
+    tracing::info!(
+        issue = issue.github_issue_number,
+        input_tokens = result.input_tokens,
+        output_tokens = result.output_tokens,
+        content_len = result.content.len(),
+        "AI invocation complete"
+    );
+    tracing::debug!(
+        issue = issue.github_issue_number,
+        content = %result.content,
+        "AI output content"
+    );
+
     // Log usage
     ctx.db.log_usage(
         issue.id,
@@ -145,9 +159,18 @@ pub async fn execute(
             issue.github_issue_number, gh_issue.title
         )
     };
-    ctx.worktree
+    let has_changes = ctx
+        .worktree
         .commit_all_changes(&worktree_path, &commit_msg)
         .await?;
+
+    if !has_changes {
+        return Err(HammurabiError::Ai(format!(
+            "AI produced no file changes for issue #{}. AI output: {}",
+            issue.github_issue_number,
+            result.content.chars().take(500).collect::<String>()
+        )));
+    }
 
     // Push branch
     let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
