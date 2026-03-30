@@ -366,6 +366,28 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                         labeled_by = %adder,
                         "Discovered new issue"
                     );
+
+                    // Check if bypass should be activated
+                    if let Some(ref bypass_label) = ctx.config.bypass_label {
+                        if gh_issue.labels.contains(bypass_label) {
+                            if ctx.config.approvers.contains(&gh_issue.user_login) {
+                                if let Some(tracked) = ctx.db.get_issue(&ctx.config.repo, gh_issue.number)? {
+                                    ctx.db.set_issue_bypass(tracked.id, true)?;
+                                    tracing::info!(
+                                        issue = gh_issue.number,
+                                        author = %gh_issue.user_login,
+                                        "Bypass mode activated: issue has bypass label and was created by approver"
+                                    );
+                                }
+                            } else {
+                                tracing::warn!(
+                                    issue = gh_issue.number,
+                                    author = %gh_issue.user_login,
+                                    "Bypass label present but issue creator is not an approver — bypass ignored"
+                                );
+                            }
+                        }
+                    }
                 }
                 Ok(Some(adder)) => {
                     tracing::warn!(
@@ -522,6 +544,28 @@ async fn process_issue(
             transitions::spec_drafting::execute(ctx, issue, None).await?;
         }
         IssueState::AwaitSpecApproval => {
+            // Bypass mode: auto-approve spec without waiting for /approve
+            if issue.bypass {
+                tracing::info!(
+                    issue = issue.github_issue_number,
+                    "Bypass mode: auto-approving spec"
+                );
+                ctx.db.update_issue_state(
+                    issue.id,
+                    IssueState::Implementing,
+                    Some(IssueState::AwaitSpecApproval),
+                )?;
+                ctx.github
+                    .post_issue_comment(
+                        issue.github_issue_number,
+                        "Spec auto-approved (bypass mode). Starting implementation...",
+                    )
+                    .await?;
+                let updated = ctx.db.get_issue(&ctx.config.repo, issue.github_issue_number)?.unwrap();
+                transitions::implementing::execute(ctx, &updated, None).await?;
+                return Ok(());
+            }
+
             match approval::check_comment_approval(
                 &*ctx.github,
                 issue.github_issue_number,

@@ -136,6 +136,42 @@ For PR feedback, any comment from an authorized approver on the implementation P
 
 If the implementation PR is closed without merge, the issue transitions to Failed.
 
+## Bypass Mode
+
+For trusted issues filed by maintainers, the spec approval gate can be skipped. When enabled, the daemon auto-approves the spec and proceeds directly to implementation.
+
+### Configuration
+
+Set `bypass_label` in `hammurabi.toml` to the GitHub label that triggers bypass mode:
+
+```toml
+bypass_label = "hammurabi-bypass"
+```
+
+If `bypass_label` is not set, bypass mode is disabled entirely.
+
+### Security Constraint
+
+Bypass activates only when **both** conditions are met:
+1. The issue carries the configured `bypass_label`
+2. The issue **creator** is a user listed in `approvers`
+
+If a non-approver creates an issue with the bypass label, bypass is ignored and the issue follows the normal approval flow. A warning is logged.
+
+### What Is Bypassed
+
+| Gate | Normal Flow | Bypass Flow |
+|------|-------------|-------------|
+| Spec approval | Blocks until `/approve` comment | Auto-approved immediately after spec is posted |
+| PR feedback | Reviewer comments trigger re-implementation | Reviewer comments still trigger re-implementation (unchanged) |
+| PR merge | Blocks until human merges | Blocks until human merges (unchanged) |
+
+Bypass skips only the spec approval gate. The PR feedback loop and human merge requirement remain active. The daemon never auto-merges PRs, even in bypass mode.
+
+### Lifecycle
+
+Bypass is determined at issue discovery time and stored in the database. It is immutable for the lifecycle of the issue — removing the bypass label after discovery does not change the behavior.
+
 ## Issue Discovery
 
 The daemon polls all open issues in the repository on each cycle. Only issues carrying the configured `tracking_label` are tracked; issues without the label are ignored. Maintainers apply the label manually to issues they want the daemon to automate. When the daemon first discovers a labeled issue not yet in SQLite, it inserts it as Discovered.
@@ -194,6 +230,7 @@ The daemon reads configuration from `hammurabi.toml`. Search order: current work
 | tracking_label | Default GitHub label for issue tracking | hammurabi |
 | stale_timeout_days | Days before a blocking state gets a reminder | 7 |
 | approvers | Default GitHub usernames authorized to approve | Required (globally or per-repo) |
+| bypass_label | GitHub label that enables bypass mode (skips spec approval for issues created by approvers) | None (disabled) |
 | github_token | GitHub authentication token | None (falls back to `GITHUB_TOKEN` env var) |
 
 Per-task-type overrides (spec, implement) are supported for ai_model, ai_max_turns, ai_effort, ai_timeout_secs, and ai_stall_timeout_secs.

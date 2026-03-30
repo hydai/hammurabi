@@ -53,6 +53,7 @@ fn test_config() -> RepoConfig {
         max_concurrent_agents: 5,
         hooks: crate::config::HooksConfig::default(),
         approvers: vec!["alice".to_string()],
+        bypass_label: None,
         spec: None,
         implement: None,
     }
@@ -70,6 +71,7 @@ async fn test_retry_after_spec_failure() {
         body: "Do it".to_string(),
         labels: vec!["hammurabi".to_string()],
         state: "Open".to_string(),
+        user_login: "alice".to_string(),
     });
 
     // AI that fails first
@@ -149,6 +151,7 @@ async fn test_implementation_failure_and_retry() {
         body: "Build it".to_string(),
         labels: vec![],
         state: "Open".to_string(),
+        user_login: "alice".to_string(),
     });
 
     // AI that fails

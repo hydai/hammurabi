@@ -87,6 +87,7 @@ mod tests {
             max_concurrent_agents: 5,
             hooks: crate::config::HooksConfig::default(),
             approvers: vec!["alice".to_string()],
+            bypass_label: None,
             spec: None,
             implement: None,
         }

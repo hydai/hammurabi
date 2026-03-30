@@ -120,6 +120,7 @@ Config is loaded from `./hammurabi.toml` or `~/.config/hammurabi/hammurabi.toml`
 | `ai_timeout_secs` | `3600` | Max total seconds per AI invocation |
 | `ai_stall_timeout_secs` | `0` (disabled) | Kill AI if no output for this many seconds; 0 = disabled |
 | `ai_max_retries` | `2` | Auto-retries before transitioning to Failed |
+| `bypass_label` | -- | Label that enables bypass mode (skips spec approval for approver-created issues) |
 | `github_token` | -- | Falls back to `GITHUB_TOKEN` env var |
 
 Per-task overrides for `ai_model`, `ai_max_turns`, `ai_effort`, `ai_timeout_secs`, and `ai_stall_timeout_secs` are supported under `[spec]` and `[implement]` sections.
@@ -181,6 +182,10 @@ Any active state can transition to `Failed` (after exhausting `ai_max_retries` a
 | Implementation approval | PR merge by human |
 
 Non-`/approve` replies from approvers on the issue are treated as feedback -- the daemon revises the spec. PR review comments trigger implementation revisions on the same PR.
+
+### Bypass Mode
+
+For trusted issues, set `bypass_label` in config (e.g., `"hammurabi-bypass"`). When an issue has this label **and** was created by a user in `approvers`, the spec approval gate is skipped — the daemon auto-approves the spec and proceeds directly to implementation. PR feedback and human merge are still required.
 
 ## Error Recovery
 

@@ -192,6 +192,7 @@ mod tests {
             max_concurrent_agents: 5,
             hooks: crate::config::HooksConfig::default(),
             approvers: vec!["alice".to_string()],
+            bypass_label: None,
             spec: None,
             implement: None,
         }
@@ -209,6 +210,7 @@ mod tests {
             body: "We need feature X".to_string(),
             labels: vec!["hammurabi".to_string()],
             state: "Open".to_string(),
+            user_login: "alice".to_string(),
         });
 
         let ai = Arc::new(MockAiAgent::new());

@@ -76,6 +76,7 @@ struct RawConfig {
     approvers: Option<Vec<String>>,
     github_token: Option<String>,
     github_app: Option<RawGitHubAppConfig>,
+    bypass_label: Option<String>,
     hooks: Option<HooksConfig>,
     spec: Option<AiTaskConfig>,
     implement: Option<AiTaskConfig>,
@@ -97,6 +98,7 @@ pub struct RepoConfig {
     pub ai_max_retries: u32,
     pub max_concurrent_agents: u32,
     pub approvers: Vec<String>,
+    pub bypass_label: Option<String>,
     pub hooks: HooksConfig,
     pub spec: Option<AiTaskConfig>,
     pub implement: Option<AiTaskConfig>,
@@ -171,6 +173,7 @@ impl RepoConfig {
                 ai_max_retries: b.ai_max_retries,
                 max_concurrent_agents: b.max_concurrent_agents,
                 approvers: b.approvers.clone(),
+                bypass_label: b.bypass_label.clone(),
                 hooks: b.hooks.clone(),
                 spec: b.spec.clone(),
                 implement: b.implement.clone(),
@@ -294,6 +297,7 @@ pub fn load() -> Result<Config, HammurabiError> {
             approvers: None,
             github_token: None,
             github_app: None,
+            bypass_label: None,
             hooks: None,
             spec: None,
             implement: None,
@@ -342,6 +346,10 @@ pub fn load() -> Result<Config, HammurabiError> {
     let global_hooks = raw.hooks.unwrap_or_default();
     let global_spec = raw.spec;
     let global_implement = raw.implement;
+
+    let bypass_label = raw
+        .bypass_label
+        .or_else(|| env_override_option_string("bypass_label"));
 
     // --- GitHub authentication ---
     let mut github_token = raw.github_token.unwrap_or_default();
@@ -532,6 +540,7 @@ pub fn load() -> Result<Config, HammurabiError> {
                 .max_concurrent_agents
                 .unwrap_or(global_max_concurrent_agents),
             approvers,
+            bypass_label: bypass_label.clone(),
             hooks: entry.hooks.clone().unwrap_or_else(|| global_hooks.clone()),
             spec: entry.spec.clone().or_else(|| global_spec.clone()),
             implement: entry.implement.clone().or_else(|| global_implement.clone()),
@@ -636,6 +645,7 @@ mod tests {
                 ai_max_retries: entry.ai_max_retries.unwrap_or(global_ai_max_retries),
                 max_concurrent_agents: entry.max_concurrent_agents.unwrap_or(global_max_concurrent_agents),
                 approvers,
+                bypass_label: raw.bypass_label.clone(),
                 hooks: entry.hooks.clone().unwrap_or_else(|| global_hooks.clone()),
                 spec: entry.spec.clone().or_else(|| global_spec.clone()),
                 implement: entry.implement.clone().or_else(|| global_implement.clone()),
@@ -930,5 +940,30 @@ mod tests {
         "#;
         let err = parse_raw(toml).unwrap_err();
         assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn test_bypass_label_default_none() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "claude-sonnet-4-6"
+            approvers = ["alice"]
+            github_token = "ghp_test"
+        "#;
+        let config = parse_raw(toml).unwrap();
+        assert!(config.repos[0].bypass_label.is_none());
+    }
+
+    #[test]
+    fn test_bypass_label_configured() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "claude-sonnet-4-6"
+            approvers = ["alice"]
+            github_token = "ghp_test"
+            bypass_label = "hammurabi-bypass"
+        "#;
+        let config = parse_raw(toml).unwrap();
+        assert_eq!(config.repos[0].bypass_label.as_deref(), Some("hammurabi-bypass"));
     }
 }

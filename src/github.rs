@@ -23,6 +23,7 @@ pub struct GitHubIssue {
     pub body: String,
     pub labels: Vec<String>,
     pub state: String,
+    pub user_login: String,
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +208,7 @@ impl GitHubClient for OctocrabClient {
                         body: i.body.unwrap_or_default(),
                         labels: i.labels.iter().map(|l| l.name.clone()).collect(),
                         state: format!("{:?}", i.state),
+                        user_login: i.user.login,
                     })
                     .collect())
             }
@@ -236,6 +238,7 @@ impl GitHubClient for OctocrabClient {
                     body: issue.body.unwrap_or_default(),
                     labels: issue.labels.iter().map(|l| l.name.clone()).collect(),
                     state: format!("{:?}", issue.state),
+                    user_login: issue.user.login,
                 })
             }
         })
@@ -773,6 +776,7 @@ mod tests {
             body: "Do something".to_string(),
             labels: vec!["hammurabi".to_string()],
             state: "Open".to_string(),
+            user_login: "alice".to_string(),
         });
         client.add_issue(GitHubIssue {
             number: 2,
@@ -780,6 +784,7 @@ mod tests {
             body: "Other".to_string(),
             labels: vec!["bug".to_string()],
             state: "Open".to_string(),
+            user_login: "bob".to_string(),
         });
 
         let issues = client.list_labeled_issues("hammurabi").await.unwrap();

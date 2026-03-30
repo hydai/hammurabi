@@ -166,6 +166,16 @@ impl Database {
             .map_err(|e| HammurabiError::Database(format!("repo column migration failed: {}", e)))?;
         }
 
+        // Add bypass column if missing (incremental migration)
+        let has_bypass = conn
+            .prepare("SELECT bypass FROM issues LIMIT 0")
+            .is_ok();
+        if !has_bypass {
+            let _ = conn.execute_batch(
+                "ALTER TABLE issues ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0;",
+            );
+        }
+
         // Create tables if they don't exist (fresh install or post-migration)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS issues (
@@ -183,6 +193,7 @@ impl Database {
                 error_message TEXT,
                 worktree_path TEXT,
                 retry_count INTEGER NOT NULL DEFAULT 0,
+                bypass INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(repo, github_issue_number)
@@ -244,7 +255,7 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count,
+                        previous_state, error_message, worktree_path, retry_count, bypass,
                         created_at, updated_at
                  FROM issues WHERE repo = ?1 AND github_issue_number = ?2",
             )
@@ -273,7 +284,7 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count,
+                        previous_state, error_message, worktree_path, retry_count, bypass,
                         created_at, updated_at
                  FROM issues WHERE github_issue_number = ?1",
             )
@@ -296,7 +307,7 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count,
+                        previous_state, error_message, worktree_path, retry_count, bypass,
                         created_at, updated_at
                  FROM issues",
             )
@@ -320,7 +331,7 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count,
+                        previous_state, error_message, worktree_path, retry_count, bypass,
                         created_at, updated_at
                  FROM issues WHERE repo = ?1",
             )
@@ -344,7 +355,7 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count,
+                        previous_state, error_message, worktree_path, retry_count, bypass,
                         created_at, updated_at
                  FROM issues WHERE state = ?1",
             )
@@ -492,6 +503,16 @@ impl Database {
         Ok(())
     }
 
+    pub fn set_issue_bypass(&self, id: i64, bypass: bool) -> Result<(), HammurabiError> {
+        self.conn()
+            .execute(
+                "UPDATE issues SET bypass = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![bypass as i64, id],
+            )
+            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn update_issue_worktree(
         &self,
         id: i64,
@@ -587,8 +608,9 @@ fn row_to_tracked_issue(row: &rusqlite::Row) -> TrackedIssue {
         error_message: row.get(11).unwrap(),
         worktree_path: row.get(12).unwrap(),
         retry_count: row.get::<_, i64>(13).unwrap_or(0) as u32,
-        created_at: row.get(14).unwrap(),
-        updated_at: row.get(15).unwrap(),
+        bypass: row.get::<_, i64>(14).unwrap_or(0) != 0,
+        created_at: row.get(15).unwrap(),
+        updated_at: row.get(16).unwrap(),
     }
 }
 
@@ -891,5 +913,28 @@ mod tests {
 
         let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert_eq!(updated.retry_count, 0);
+    }
+
+    #[test]
+    fn test_bypass_default_false() {
+        let db = test_db();
+        db.insert_issue("owner/repo", 1, "Issue 1").unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert!(!issue.bypass);
+    }
+
+    #[test]
+    fn test_set_issue_bypass() {
+        let db = test_db();
+        db.insert_issue("owner/repo", 1, "Issue 1").unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+
+        db.set_issue_bypass(issue.id, true).unwrap();
+        let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert!(updated.bypass);
+
+        db.set_issue_bypass(issue.id, false).unwrap();
+        let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert!(!updated.bypass);
     }
 }

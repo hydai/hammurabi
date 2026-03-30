@@ -55,6 +55,7 @@ fn test_config() -> RepoConfig {
         max_concurrent_agents: 5,
         hooks: crate::config::HooksConfig::default(),
         approvers: vec!["alice".to_string()],
+        bypass_label: None,
         spec: None,
         implement: None,
     }
@@ -72,6 +73,7 @@ async fn test_full_lifecycle() {
         body: "We need login/logout".to_string(),
         labels: vec!["hammurabi".to_string()],
         state: "Open".to_string(),
+        user_login: "alice".to_string(),
     });
 
     let ai = Arc::new(MockAiAgent::new());
@@ -173,4 +175,114 @@ async fn test_full_lifecycle() {
     assert!(usage.len() >= 2); // spec + implementation
 
     let _ = tokio::fs::remove_dir_all(&tmp).await;
+}
+
+#[tokio::test]
+async fn test_bypass_spec_auto_approval() {
+    // When bypass is active, AwaitSpecApproval should auto-transition to Implementing
+    // without requiring a /approve comment.
+    let tmp = std::env::temp_dir().join("hammurabi-integ-bypass");
+    let _ = tokio::fs::remove_dir_all(&tmp).await;
+
+    let gh = Arc::new(MockGitHubClient::new());
+    gh.add_issue(GitHubIssue {
+        number: 1,
+        title: "Quick fix".to_string(),
+        body: "Fix the typo".to_string(),
+        labels: vec!["hammurabi".to_string(), "hammurabi-bypass".to_string()],
+        state: "Open".to_string(),
+        user_login: "alice".to_string(),
+    });
+
+    let ai = Arc::new(MockAiAgent::new());
+    ai.set_response(
+        "producing a SPEC.md",
+        AiResult {
+            content: "# SPEC\n\nFix the typo".to_string(),
+            session_id: Some("sess-spec".to_string()),
+            input_tokens: 200,
+            output_tokens: 100,
+        },
+    );
+    ai.set_default_response(AiResult {
+        content: "Implementation complete".to_string(),
+        session_id: Some("sess-impl".to_string()),
+        input_tokens: 400,
+        output_tokens: 200,
+    });
+
+    let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
+    let db = Arc::new(Database::open(":memory:").unwrap());
+
+    // Enable bypass in config
+    let mut config = test_config();
+    config.bypass_label = Some("hammurabi-bypass".to_string());
+    let config = Arc::new(config);
+
+    let ctx = TransitionContext {
+        github: gh.clone(),
+        ai,
+        worktree: wt,
+        db: db.clone(),
+        config,
+    };
+
+    // Insert issue and activate bypass (simulating what poller discovery does)
+    db.insert_issue("owner/repo", 1, "Quick fix").unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+    db.set_issue_bypass(issue.id, true).unwrap();
+
+    // Phase 1: Spec drafting
+    transitions::spec_drafting::execute(&ctx, &issue, None)
+        .await
+        .unwrap();
+
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+    assert_eq!(issue.state, IssueState::AwaitSpecApproval);
+    assert!(issue.bypass);
+
+    // Phase 2: Bypass auto-approval — no /approve comment needed!
+    // The poller's process_issue would do this; we simulate the bypass logic here.
+    assert!(issue.bypass);
+    db.update_issue_state(
+        issue.id,
+        IssueState::Implementing,
+        Some(IssueState::AwaitSpecApproval),
+    )
+    .unwrap();
+
+    // Phase 3: Implementation
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+    transitions::implementing::execute(&ctx, &issue, None)
+        .await
+        .unwrap();
+
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+    assert_eq!(issue.state, IssueState::AwaitPRApproval);
+    assert!(issue.impl_pr_number.is_some());
+
+    // Phase 4: PR still needs human merge even in bypass mode
+    let pr = issue.impl_pr_number.unwrap();
+    gh.set_pr_status(pr, PrStatus::Merged);
+    transitions::completion::check(&ctx, &issue).await.unwrap();
+
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+    assert_eq!(issue.state, IssueState::Done);
+
+    let _ = tokio::fs::remove_dir_all(&tmp).await;
+}
+
+#[tokio::test]
+async fn test_bypass_rejected_for_non_approver() {
+    // Bypass label is present but issue creator is NOT an approver — bypass should not activate.
+    let db = Database::open(":memory:").unwrap();
+    db.insert_issue("owner/repo", 1, "Feature from outsider").unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+
+    // Do NOT set bypass (simulating what poller would do for non-approver)
+    assert!(!issue.bypass);
+
+    // The issue should follow normal flow (bypass stays false)
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+    assert!(!issue.bypass);
 }

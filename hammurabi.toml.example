@@ -33,6 +33,11 @@ ai_model = "claude-sonnet-4-6"
 # GitHub usernames authorized to approve (required)
 approvers = ["your-github-username"]
 
+# Label that enables bypass mode (optional, disabled by default)
+# When present and the issue creator is in the approvers list,
+# the spec approval gate is skipped automatically.
+# bypass_label = "hammurabi-bypass"
+
 # GitHub authentication token (falls back to GITHUB_TOKEN env var)
 # github_token = "ghp_..."
 
