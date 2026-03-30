@@ -132,11 +132,65 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     }
 }
 
+/// Validate that config is sufficient for dispatching new work.
+fn validate_dispatch_config(config: &Config) -> Result<(), String> {
+    if config.repo.is_empty() {
+        return Err("repo is empty".into());
+    }
+    if config.ai_model.is_empty() {
+        return Err("ai_model is empty".into());
+    }
+    if config.approvers.is_empty() {
+        return Err("approvers list is empty".into());
+    }
+    Ok(())
+}
+
 async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     tracing::debug!("Starting poll cycle");
 
     // Fetch origin
     ctx.worktree.fetch_origin().await?;
+
+    // Dispatch preflight validation
+    let dispatch_ok = match validate_dispatch_config(&ctx.config) {
+        Ok(()) => true,
+        Err(reason) => {
+            tracing::error!("Dispatch preflight failed: {}. Skipping issue discovery and processing, but reconciliation continues.", reason);
+            false
+        }
+    };
+
+    // Check for externally closed issues (always, even if dispatch fails)
+    let all_tracked = ctx.db.get_all_issues()?;
+    for issue in &all_tracked {
+        if issue.state == IssueState::Done || issue.state == IssueState::Failed {
+            continue;
+        }
+        match ctx.github.is_issue_open(issue.github_issue_number).await {
+            Ok(false) => {
+                ctx.db
+                    .update_issue_state(issue.id, IssueState::Done, Some(issue.state))?;
+                tracing::info!(
+                    issue = issue.github_issue_number,
+                    "Issue closed externally, marking as Done"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    issue = issue.github_issue_number,
+                    "Failed to check issue status: {}",
+                    e
+                );
+            }
+            _ => {}
+        }
+    }
+
+    if !dispatch_ok {
+        tracing::debug!("Skipping dispatch due to preflight failure");
+        return Ok(());
+    }
 
     // Discover new issues
     let labeled_issues = ctx
@@ -181,32 +235,6 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                     );
                 }
             }
-        }
-    }
-
-    // Check for externally closed issues
-    let all_tracked = ctx.db.get_all_issues()?;
-    for issue in &all_tracked {
-        if issue.state == IssueState::Done || issue.state == IssueState::Failed {
-            continue;
-        }
-        match ctx.github.is_issue_open(issue.github_issue_number).await {
-            Ok(false) => {
-                ctx.db
-                    .update_issue_state(issue.id, IssueState::Done, Some(issue.state))?;
-                tracing::info!(
-                    issue = issue.github_issue_number,
-                    "Issue closed externally, marking as Done"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    issue = issue.github_issue_number,
-                    "Failed to check issue status: {}",
-                    e
-                );
-            }
-            _ => {}
         }
     }
 
@@ -297,6 +325,32 @@ async fn process_issue(
     ctx: &TransitionContext,
     issue: &TrackedIssue,
 ) -> Result<(), HammurabiError> {
+    // Blocker check: skip active states if issue has "blocked" label
+    if issue.state.is_active() {
+        match ctx.github.get_issue(issue.github_issue_number).await {
+            Ok(gh_issue) => {
+                let blocked = gh_issue.labels.iter().any(|l| {
+                    let lower = l.to_lowercase();
+                    lower == "blocked" || lower.starts_with("blocked:")
+                });
+                if blocked {
+                    tracing::debug!(
+                        issue = issue.github_issue_number,
+                        "Skipping issue: has blocked label"
+                    );
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    issue = issue.github_issue_number,
+                    "Failed to check labels for blocker gating: {}", e
+                );
+                // Continue processing — don't block on label check failure
+            }
+        }
+    }
+
     match issue.state {
         IssueState::Discovered => {
             transitions::spec_drafting::execute(ctx, issue, None).await?;
