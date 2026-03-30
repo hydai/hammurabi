@@ -37,13 +37,14 @@ src/
 ├── models.rs            # IssueState, data structs
 ├── state_machine.rs     # Pure transition function
 ├── github.rs            # GitHubClient trait + OctocrabClient
-├── claude.rs            # AiAgent trait + ClaudeCliAgent
+├── claude.rs            # AiAgent trait + ClaudeCliAgent (streaming stdout with timeout/stall detection)
 ├── worktree.rs          # WorktreeManager trait + GitWorktreeManager
 ├── approval.rs          # Approval gate checking
+├── hooks.rs             # Workspace lifecycle hooks (after_create, before_run, after_run, before_remove)
 ├── prompts.rs           # AI prompt templates
-├── poller.rs            # Daemon main loop
+├── poller.rs            # Daemon main loop (concurrent processing with Semaphore + JoinSet)
 ├── lock.rs              # PID-based lock file
-├── error.rs             # Error types
+├── error.rs             # Error types (includes AiTimeout variant)
 └── transitions/
     ├── spec_drafting.rs
     ├── implementing.rs
