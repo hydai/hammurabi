@@ -1,6 +1,6 @@
 # Hammurabi
 
-A CLI daemon that monitors a GitHub repository's issue board, orchestrates AI agents to draft specifications and implement solutions, with mandatory human approval at every step.
+A CLI daemon that monitors one or more GitHub repositories' issue boards, orchestrates AI agents to draft specifications and implement solutions, with mandatory human approval at every step.
 
 ## How It Works
 
@@ -60,27 +60,60 @@ hammurabi watch your-org/your-repo
 
 5. Add the `hammurabi` label to any issue to start automation.
 
+### Multi-Repository Setup
+
+To monitor multiple repositories from a single daemon, use the `[[repos]]` array:
+
+```toml
+ai_model = "claude-sonnet-4-6"
+approvers = ["your-github-username"]
+
+[[repos]]
+repo = "your-org/repo-a"
+
+[[repos]]
+repo = "your-org/repo-b"
+tracking_label = "auto"
+approvers = ["another-user"]    # Override per repo
+```
+
+Then start with:
+
+```bash
+hammurabi watch
+```
+
+Each repo can override `tracking_label`, `approvers`, AI settings, `max_concurrent_agents`, and `hooks`. See [Configuration](#configuration) for all options.
+
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `hammurabi watch <owner/repo>` | Start the daemon |
-| `hammurabi status` | Show all tracked issues |
+| `hammurabi watch` | Start the daemon (repos from config) |
+| `hammurabi watch <owner/repo>` | Start the daemon for a single repo (overrides config) |
+| `hammurabi status` | Show all tracked issues across all repos |
+| `hammurabi status --repo <owner/repo>` | Show tracked issues for a specific repo |
 | `hammurabi retry <issue_number>` | Retry a failed issue |
+| `hammurabi retry <issue_number> --repo <owner/repo>` | Retry with repo disambiguation |
 | `hammurabi reset <issue_number>` | Reset an issue to Discovered |
+| `hammurabi reset <issue_number> --repo <owner/repo>` | Reset with repo disambiguation |
+
+When an issue number exists in multiple repos, `--repo` is required to disambiguate.
 
 ## Configuration
 
 Config is loaded from `./hammurabi.toml` or `~/.config/hammurabi/hammurabi.toml`, re-read each poll cycle for dynamic reload. Environment variables with `HAMMURABI_` prefix override any setting.
 
+### Global Parameters
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `repo` | *required* | GitHub repository (`owner/repo`) |
+| `repo` | -- | Single GitHub repository (`owner/repo`); use this or `[[repos]]` |
 | `ai_model` | *required* | Default AI model for all tasks |
-| `approvers` | *required* | GitHub usernames authorized to approve |
+| `approvers` | *required* | Default GitHub usernames authorized to approve |
 | `poll_interval` | `60` | Seconds between poll cycles |
-| `max_concurrent_agents` | `5` | Max parallel AI agents |
-| `tracking_label` | `hammurabi` | GitHub label that opts issues in |
+| `max_concurrent_agents` | `5` | Max parallel AI agents (per repo) |
+| `tracking_label` | `hammurabi` | Default GitHub label that opts issues in |
 | `stale_timeout_days` | `7` | Days before reminder on stale blocking states |
 | `api_retry_count` | `3` | Max retries for GitHub API calls |
 | `ai_max_turns` | `50` | Max conversation turns per AI invocation |
@@ -90,6 +123,30 @@ Config is loaded from `./hammurabi.toml` or `~/.config/hammurabi/hammurabi.toml`
 | `github_token` | -- | Falls back to `GITHUB_TOKEN` env var |
 
 Per-task overrides for `ai_model`, `ai_max_turns`, `ai_effort`, `ai_timeout_secs`, and `ai_stall_timeout_secs` are supported under `[spec]` and `[implement]` sections.
+
+### Multi-Repo Configuration
+
+Use the `[[repos]]` array to monitor multiple repositories:
+
+```toml
+ai_model = "claude-sonnet-4-6"
+approvers = ["alice"]
+github_token = "ghp_..."
+
+[[repos]]
+repo = "owner/repo-a"
+
+[[repos]]
+repo = "owner/repo-b"
+tracking_label = "auto"
+approvers = ["bob"]
+ai_model = "claude-opus-4-6"
+max_concurrent_agents = 2
+```
+
+Each `[[repos]]` entry can override: `tracking_label`, `approvers`, `ai_model`, `ai_max_turns`, `ai_effort`, `ai_timeout_secs`, `ai_stall_timeout_secs`, `ai_max_retries`, `max_concurrent_agents`, `hooks`, and `spec`/`implement` task overrides.
+
+Setting both a top-level `repo` field and `[[repos]]` in the same config file is an error.
 
 ### Workspace Hooks
 
@@ -103,6 +160,8 @@ after_run = "make cleanup"         # Runs after AI invocation (failure logged, i
 before_remove = "echo done"        # Runs before worktree removal (failure logged, ignored)
 timeout_secs = 60                  # Hook execution timeout (default: 60)
 ```
+
+Hooks can be configured globally or per-repo within `[[repos]]` entries.
 
 ## State Machine
 

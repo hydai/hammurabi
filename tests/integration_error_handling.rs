@@ -29,7 +29,7 @@ mod worktree;
 
 use claude::mock::MockAiAgent;
 use claude::AiResult;
-use config::Config;
+use config::RepoConfig;
 use db::Database;
 use github::mock::MockGitHubClient;
 use github::{GitHubIssue, PrStatus};
@@ -37,15 +37,13 @@ use models::IssueState;
 use transitions::TransitionContext;
 use worktree::mock::MockWorktreeManager;
 
-fn test_config() -> Config {
-    Config {
+fn test_config() -> RepoConfig {
+    RepoConfig {
         repo: "owner/repo".to_string(),
         owner: "owner".to_string(),
         repo_name: "repo".to_string(),
-        poll_interval: 60,
         tracking_label: "hammurabi".to_string(),
         stale_timeout_days: 7,
-        api_retry_count: 3,
         ai_model: "test-model".to_string(),
         ai_max_turns: 50,
         ai_effort: "high".to_string(),
@@ -55,7 +53,6 @@ fn test_config() -> Config {
         max_concurrent_agents: 5,
         hooks: crate::config::HooksConfig::default(),
         approvers: vec!["alice".to_string()],
-        github_auth: crate::config::GitHubAuth::Token("token".to_string()),
         spec: None,
         implement: None,
     }
@@ -77,7 +74,7 @@ async fn test_retry_after_spec_failure() {
 
     // AI that fails first
     let ai = Arc::new(MockAiAgent::new());
-    // No response configured → will fail
+    // No response configured -> will fail
 
     let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
     let db = Arc::new(Database::open(":memory:").unwrap());
@@ -90,8 +87,8 @@ async fn test_retry_after_spec_failure() {
         config: Arc::new(test_config()),
     };
 
-    db.insert_issue(1, "Feature").unwrap();
-    let issue = db.get_issue(1).unwrap().unwrap();
+    db.insert_issue("owner/repo", 1, "Feature").unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
     // Spec drafting should fail (no mock response)
     let result = transitions::spec_drafting::execute(&ctx, &issue, None).await;
@@ -101,7 +98,7 @@ async fn test_retry_after_spec_failure() {
     db.update_issue_state(issue.id, IssueState::Failed, Some(IssueState::Discovered))
         .unwrap();
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::Failed);
     assert_eq!(issue.previous_state, Some(IssueState::Discovered));
 
@@ -109,7 +106,7 @@ async fn test_retry_after_spec_failure() {
     db.update_issue_state(issue.id, IssueState::Discovered, None)
         .unwrap();
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::Discovered);
 
     // Now configure AI to succeed
@@ -125,7 +122,7 @@ async fn test_retry_after_spec_failure() {
         .await
         .unwrap();
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::AwaitSpecApproval);
 
     let _ = tokio::fs::remove_dir_all(&tmp).await;
@@ -159,11 +156,11 @@ async fn test_implementation_failure_and_retry() {
 
     let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
     let db = Arc::new(Database::open(":memory:").unwrap());
-    db.insert_issue(1, "Feature").unwrap();
-    let issue = db.get_issue(1).unwrap().unwrap();
+    db.insert_issue("owner/repo", 1, "Feature").unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     db.update_issue_spec_content(issue.id, "# Spec\nBuild feature")
         .unwrap();
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
     let ctx = TransitionContext {
         github: gh.clone(),
@@ -185,7 +182,7 @@ async fn test_implementation_failure_and_retry() {
     )
     .unwrap();
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::Failed);
     assert_eq!(issue.previous_state, Some(IssueState::Implementing));
 
@@ -201,12 +198,12 @@ async fn test_implementation_failure_and_retry() {
         output_tokens: 50,
     });
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     transitions::implementing::execute(&ctx, &issue, None)
         .await
         .unwrap();
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::AwaitPRApproval);
     assert!(issue.impl_pr_number.is_some());
 

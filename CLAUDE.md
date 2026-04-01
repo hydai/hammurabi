@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Hammurabi is a Rust CLI daemon that monitors a GitHub repository's issue board and orchestrates a Claude CLI agent to automate the issue lifecycle (spec drafting → approval → implementation) with mandatory human approval at every step.
+Hammurabi is a Rust CLI daemon that monitors one or more GitHub repositories' issue boards and orchestrates a Claude CLI agent to automate the issue lifecycle (spec drafting → approval → implementation) with mandatory human approval at every step.
 
 ## Build & Test
 
@@ -15,9 +15,10 @@ cargo test               # Run all unit + integration tests
 
 - **Pure state machine** (`src/state_machine.rs`) -- all transitions are `(State, Event) -> Vec<SideEffect>` with no I/O
 - **Trait-based abstractions** -- `GitHubClient`, `AiAgent`, `WorktreeManager` traits enable mock-based testing
-- **Database** (`src/db.rs`) -- SQLite with WAL mode, wrapped in `Mutex` for thread safety
+- **Multi-repo support** -- `Config` holds a `Vec<RepoConfig>`, each repo gets its own GitHub client + worktree manager
+- **Database** (`src/db.rs`) -- SQLite with WAL mode, wrapped in `Mutex` for thread safety; `repo` column scopes issues
 - **Transitions** (`src/transitions/`) -- one module per active state, each performing the actual work
-- **Poller** (`src/poller.rs`) -- main daemon loop that orchestrates everything
+- **Poller** (`src/poller.rs`) -- main daemon loop that iterates over all configured repos each cycle
 
 ## Key Conventions
 
@@ -32,7 +33,7 @@ cargo test               # Run all unit + integration tests
 ```
 src/
 ├── main.rs              # CLI entry point
-├── config.rs            # TOML config + env overrides
+├── config.rs            # TOML config + env overrides (Config + RepoConfig, supports [[repos]] array)
 ├── db.rs                # SQLite schema + CRUD
 ├── models.rs            # IssueState, data structs
 ├── state_machine.rs     # Pure transition function

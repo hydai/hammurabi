@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use tokio::task::JoinSet;
 
 use crate::approval::{self, CommentApprovalResult, PrApprovalResult};
 use crate::claude::ClaudeCliAgent;
-use crate::config::Config;
+use crate::config::{Config, RepoConfig};
 use crate::db::Database;
 use crate::error::HammurabiError;
 use crate::github::{GitHubClient, OctocrabClient};
@@ -15,6 +16,13 @@ use crate::models::{IssueState, TrackedIssue};
 use crate::transitions::{self, TransitionContext};
 use crate::config::{self, GitHubAuth};
 use crate::worktree::{AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager};
+
+/// Per-repo runtime context (GitHub client + worktree manager).
+struct RepoRuntime {
+    github: Arc<dyn GitHubClient>,
+    worktree: Arc<dyn WorktreeManager>,
+    config: Arc<RepoConfig>,
+}
 
 pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     let base_dir = PathBuf::from(".hammurabi");
@@ -33,16 +41,178 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
         db_path.to_str().unwrap_or(".hammurabi/hammurabi.db"),
     )?);
 
-    // Initialize GitHub client and token provider based on auth mode
-    let github = Arc::new(OctocrabClient::new(
-        &config.github_auth,
-        &config.owner,
-        &config.repo_name,
-        config.api_retry_count,
-    )?);
+    // Build token provider (shared across all repos)
+    let token_provider = build_token_provider(&config.github_auth)?;
 
-    let token_provider: Arc<dyn TokenProvider> = match &config.github_auth {
-        GitHubAuth::Token(token) => Arc::new(StaticTokenProvider::new(token.clone())),
+    // Initialize AI agent (shared, stateless)
+    let ai: Arc<dyn crate::claude::AiAgent> = Arc::new(ClaudeCliAgent::new());
+
+    // Initialize per-repo runtimes
+    let repos_dir = base_dir.join("repos");
+    let mut cached_runtimes: HashMap<String, RepoRuntime> = HashMap::new();
+
+    for repo_config in &config.repos {
+        let runtime = init_repo_runtime(
+            repo_config,
+            &config.github_auth,
+            config.api_retry_count,
+            &repos_dir,
+            token_provider.clone(),
+        ).await?;
+        cached_runtimes.insert(repo_config.repo.clone(), runtime);
+    }
+
+    // Backfill repo column for existing data (single-repo migration)
+    if config.repos.len() == 1 {
+        let count = db.backfill_repo(&config.repos[0].repo)?;
+        if count > 0 {
+            tracing::info!(
+                repo = %config.repos[0].repo,
+                count = count,
+                "Backfilled repo column for existing issues"
+            );
+        }
+    } else if config.repos.len() > 1 {
+        // Check for unscoped legacy rows that won't be processed
+        let unscoped = db.get_all_issues_for_repo("")?;
+        if !unscoped.is_empty() {
+            tracing::warn!(
+                count = unscoped.len(),
+                "Database contains {} issues with empty repo column. \
+                 These will not be processed until migrated. \
+                 Run with a single repo first to backfill, or manually \
+                 update the 'repo' column in the database.",
+                unscoped.len()
+            );
+        }
+    }
+
+    // Run startup reconciliation for each repo
+    for runtime in cached_runtimes.values() {
+        let ctx = TransitionContext {
+            github: runtime.github.clone(),
+            ai: ai.clone(),
+            worktree: runtime.worktree.clone(),
+            db: db.clone(),
+            config: runtime.config.clone(),
+        };
+        reconcile(&ctx).await?;
+    }
+
+    tracing::info!(
+        repos = config.repos.len(),
+        "Reconciliation complete, entering poll loop"
+    );
+
+    let mut current_config = config;
+    let mut last_api_retry_count = current_config.api_retry_count;
+    let mut last_auth_fingerprint = auth_fingerprint(&current_config.github_auth);
+
+    // Main poll loop
+    loop {
+        // Dynamic config reload: re-read config each cycle
+        match config::load() {
+            Ok(new_config) => {
+                current_config = new_config;
+            }
+            Err(e) => {
+                tracing::warn!("Config reload failed, using previous config: {}", e);
+            }
+        }
+
+        // If global auth or retry settings changed, clear all cached runtimes
+        // so they get rebuilt with the new settings.
+        let new_fingerprint = auth_fingerprint(&current_config.github_auth);
+        if current_config.api_retry_count != last_api_retry_count
+            || new_fingerprint != last_auth_fingerprint
+        {
+            tracing::info!("Global auth or retry config changed, rebuilding all repo runtimes");
+            cached_runtimes.clear();
+            last_api_retry_count = current_config.api_retry_count;
+            last_auth_fingerprint = new_fingerprint;
+        }
+
+        // Update cached runtimes: initialize new repos, remove stale ones
+        let configured_repos: std::collections::HashSet<String> = current_config
+            .repos
+            .iter()
+            .map(|r| r.repo.clone())
+            .collect();
+
+        // Remove runtimes for repos no longer in config
+        cached_runtimes.retain(|repo, _| configured_repos.contains(repo));
+
+        // Initialize runtimes for new repos (not yet cached)
+        for repo_config in &current_config.repos {
+            if !cached_runtimes.contains_key(&repo_config.repo) {
+                let tp = match build_token_provider(&current_config.github_auth) {
+                    Ok(tp) => tp,
+                    Err(e) => {
+                        tracing::error!(repo = %repo_config.repo, "Failed to build token provider: {}", e);
+                        continue;
+                    }
+                };
+                match init_repo_runtime(
+                    repo_config,
+                    &current_config.github_auth,
+                    current_config.api_retry_count,
+                    &repos_dir,
+                    tp,
+                ).await {
+                    Ok(runtime) => {
+                        cached_runtimes.insert(repo_config.repo.clone(), runtime);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            repo = %repo_config.repo,
+                            "Failed to initialize repo runtime: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        // Poll each repo using cached runtimes
+        for repo_config in &current_config.repos {
+            if let Some(runtime) = cached_runtimes.get(&repo_config.repo) {
+                let ctx = TransitionContext {
+                    github: runtime.github.clone(),
+                    ai: ai.clone(),
+                    worktree: runtime.worktree.clone(),
+                    db: db.clone(),
+                    config: Arc::new(repo_config.clone()),
+                };
+
+                if let Err(e) = poll_cycle(&ctx).await {
+                    tracing::error!(
+                        repo = %repo_config.repo,
+                        "Poll cycle error: {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(current_config.poll_interval)).await;
+    }
+}
+
+/// Produce a comparable fingerprint for the auth config so we can detect changes.
+fn auth_fingerprint(auth: &GitHubAuth) -> String {
+    match auth {
+        GitHubAuth::Token(token) => format!("token:{}", token),
+        GitHubAuth::App { app_id, installation_id, .. } => {
+            format!("app:{}:{}", app_id, installation_id)
+        }
+    }
+}
+
+fn build_token_provider(
+    github_auth: &GitHubAuth,
+) -> Result<Arc<dyn TokenProvider>, HammurabiError> {
+    match github_auth {
+        GitHubAuth::Token(token) => Ok(Arc::new(StaticTokenProvider::new(token.clone()))),
         GitHubAuth::App {
             app_id,
             private_key_pem,
@@ -60,80 +230,59 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
                     "failed to create App client for token provider: {}",
                     e
                 )))?;
-            Arc::new(AppTokenProvider::new(
+            Ok(Arc::new(AppTokenProvider::new(
                 app_crab,
                 octocrab::models::InstallationId(*installation_id),
-            ))
+            )))
         }
-    };
-
-    let worktree_mgr = Arc::new(GitWorktreeManager::new(
-        base_dir.clone(),
-        token_provider,
-    ));
-
-    // Ensure bare clone (token not embedded in URL — uses GIT_ASKPASS instead)
-    let repo_url = format!(
-        "https://x-access-token@github.com/{}.git",
-        config.repo
-    );
-    worktree_mgr.ensure_bare_clone(&repo_url).await?;
-    tracing::info!("Bare clone ready");
-
-    // Ensure the remote default branch exists (empty repos need an initial commit)
-    let default_branch = github.get_default_branch().await?;
-    worktree_mgr.ensure_default_branch(&default_branch).await?;
-
-    // Initialize AI agent
-    let ai: Arc<dyn crate::claude::AiAgent> = Arc::new(ClaudeCliAgent::new());
-
-    let mut current_config = Arc::new(config);
-
-    let ctx = TransitionContext {
-        github: github.clone(),
-        ai: ai.clone(),
-        worktree: worktree_mgr.clone(),
-        db: db.clone(),
-        config: current_config.clone(),
-    };
-
-    // Run startup reconciliation
-    reconcile(&ctx).await?;
-    tracing::info!(
-        max_concurrent = current_config.max_concurrent_agents,
-        "Reconciliation complete, entering poll loop"
-    );
-
-    // Main poll loop
-    loop {
-        // Dynamic config reload: re-read config each cycle
-        match config::load() {
-            Ok(new_config) => {
-                current_config = Arc::new(new_config);
-            }
-            Err(e) => {
-                tracing::warn!("Config reload failed, using previous config: {}", e);
-            }
-        }
-
-        let ctx = TransitionContext {
-            github: github.clone(),
-            ai: ai.clone(),
-            worktree: worktree_mgr.clone(),
-            db: db.clone(),
-            config: current_config.clone(),
-        };
-
-        if let Err(e) = poll_cycle(&ctx).await {
-            tracing::error!("Poll cycle error: {}", e);
-        }
-
-        tokio::time::sleep(std::time::Duration::from_secs(current_config.poll_interval)).await;
     }
 }
 
+async fn init_repo_runtime(
+    repo_config: &RepoConfig,
+    github_auth: &GitHubAuth,
+    api_retry_count: u32,
+    repos_dir: &PathBuf,
+    token_provider: Arc<dyn TokenProvider>,
+) -> Result<RepoRuntime, HammurabiError> {
+    let github = Arc::new(OctocrabClient::new(
+        github_auth,
+        &repo_config.owner,
+        &repo_config.repo_name,
+        api_retry_count,
+    )?);
+
+    // Per-repo worktree base: .hammurabi/repos/<owner>/<repo_name>/
+    let repo_base_dir = repos_dir
+        .join(&repo_config.owner)
+        .join(&repo_config.repo_name);
+
+    let worktree_mgr = Arc::new(GitWorktreeManager::new(
+        repo_base_dir.clone(),
+        token_provider,
+    ));
+
+    // ensure_bare_clone returns early if the bare clone already exists,
+    // and ensure_default_branch returns early if the ref already exists,
+    // so this is cheap on subsequent calls.
+    let repo_url = format!(
+        "https://x-access-token@github.com/{}.git",
+        repo_config.repo
+    );
+    worktree_mgr.ensure_bare_clone(&repo_url).await?;
+
+    let default_branch = github.get_default_branch().await?;
+    worktree_mgr.ensure_default_branch(&default_branch).await?;
+
+    Ok(RepoRuntime {
+        github,
+        worktree: worktree_mgr,
+        config: Arc::new(repo_config.clone()),
+    })
+}
+
 /// Validate that config is sufficient for dispatching new work.
-fn validate_dispatch_config(config: &Config) -> Result<(), String> {
+fn validate_dispatch_config(config: &RepoConfig) -> Result<(), String> {
     if config.repo.is_empty() {
         return Err("repo is empty".into());
     }
@@ -147,7 +296,8 @@ fn validate_dispatch_config(config: &Config) -> Result<(), String> {
 }
 
 async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
-    tracing::debug!("Starting poll cycle");
+    let repo = &ctx.config.repo;
+    tracing::debug!(repo = %repo, "Starting poll cycle");
 
     // Fetch origin
     ctx.worktree.fetch_origin().await?;
@@ -156,13 +306,13 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     let dispatch_ok = match validate_dispatch_config(&ctx.config) {
         Ok(()) => true,
         Err(reason) => {
-            tracing::error!("Dispatch preflight failed: {}. Skipping issue discovery and processing, but reconciliation continues.", reason);
+            tracing::error!(repo = %repo, "Dispatch preflight failed: {}. Skipping issue discovery and processing, but reconciliation continues.", reason);
             false
         }
     };
 
     // Check for externally closed issues (always, even if dispatch fails)
-    let all_tracked = ctx.db.get_all_issues()?;
+    let all_tracked = ctx.db.get_all_issues_for_repo(repo)?;
     for issue in &all_tracked {
         if issue.state == IssueState::Done || issue.state == IssueState::Failed {
             continue;
@@ -172,12 +322,14 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                 ctx.db
                     .update_issue_state(issue.id, IssueState::Done, Some(issue.state))?;
                 tracing::info!(
+                    repo = %repo,
                     issue = issue.github_issue_number,
                     "Issue closed externally, marking as Done"
                 );
             }
             Err(e) => {
                 tracing::warn!(
+                    repo = %repo,
                     issue = issue.github_issue_number,
                     "Failed to check issue status: {}",
                     e
@@ -188,7 +340,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     }
 
     if !dispatch_ok {
-        tracing::debug!("Skipping dispatch due to preflight failure");
+        tracing::debug!(repo = %repo, "Skipping dispatch due to preflight failure");
         return Ok(());
     }
 
@@ -199,7 +351,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
         .await?;
 
     for gh_issue in &labeled_issues {
-        if ctx.db.get_issue(gh_issue.number)?.is_none() {
+        if ctx.db.get_issue(repo, gh_issue.number)?.is_none() {
             // Verify the tracking label was applied by an authorized approver
             match ctx
                 .github
@@ -207,8 +359,9 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                 .await
             {
                 Ok(Some(ref adder)) if ctx.config.approvers.contains(adder) => {
-                    ctx.db.insert_issue(gh_issue.number, &gh_issue.title)?;
+                    ctx.db.insert_issue(repo, gh_issue.number, &gh_issue.title)?;
                     tracing::info!(
+                        repo = %repo,
                         issue = gh_issue.number,
                         labeled_by = %adder,
                         "Discovered new issue"
@@ -216,6 +369,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                 }
                 Ok(Some(adder)) => {
                     tracing::warn!(
+                        repo = %repo,
                         issue = gh_issue.number,
                         labeled_by = %adder,
                         "Ignoring issue: label applied by unauthorized user"
@@ -223,12 +377,14 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                 }
                 Ok(None) => {
                     tracing::warn!(
+                        repo = %repo,
                         issue = gh_issue.number,
                         "Ignoring issue: could not determine who applied the label"
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
+                        repo = %repo,
                         issue = gh_issue.number,
                         "Skipping issue: label check failed: {}",
                         e
@@ -239,7 +395,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     }
 
     // Process each tracked issue concurrently (bounded by max_concurrent_agents)
-    let mut all_tracked = ctx.db.get_all_issues()?;
+    let mut all_tracked = ctx.db.get_all_issues_for_repo(repo)?;
     // Sort by issue number — oldest issues get processed first
     all_tracked.sort_by_key(|i| i.github_issue_number);
 
@@ -274,6 +430,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
             }
             Ok((issue, Err(e))) => {
                 tracing::error!(
+                    repo = %repo,
                     issue = issue.github_issue_number,
                     "Error processing issue: {}",
                     e
@@ -284,6 +441,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                         let new_count = ctx.db.increment_retry_count(issue.id)
                             .unwrap_or(issue.retry_count + 1);
                         tracing::warn!(
+                            repo = %repo,
                             issue = issue.github_issue_number,
                             retry_count = new_count,
                             max_retries = max_retries,
@@ -317,7 +475,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
         }
     }
 
-    tracing::debug!("Poll cycle complete");
+    tracing::debug!(repo = %repo, "Poll cycle complete");
     Ok(())
 }
 
@@ -325,6 +483,8 @@ async fn process_issue(
     ctx: &TransitionContext,
     issue: &TrackedIssue,
 ) -> Result<(), HammurabiError> {
+    let repo = &ctx.config.repo;
+
     // Blocker check: skip active states if issue has "blocked" label
     if issue.state.is_active() {
         match ctx.github.get_issue(issue.github_issue_number).await {
@@ -335,6 +495,7 @@ async fn process_issue(
                 });
                 if blocked {
                     tracing::debug!(
+                        repo = %repo,
                         issue = issue.github_issue_number,
                         "Skipping issue: has blocked label"
                     );
@@ -343,6 +504,7 @@ async fn process_issue(
             }
             Err(e) => {
                 tracing::warn!(
+                    repo = %repo,
                     issue = issue.github_issue_number,
                     "Failed to check labels for blocker gating: {}", e
                 );
@@ -382,7 +544,7 @@ async fn process_issue(
                             "Spec approved. Starting implementation...",
                         )
                         .await?;
-                    let updated = ctx.db.get_issue(issue.github_issue_number)?.unwrap();
+                    let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
                     transitions::implementing::execute(ctx, &updated, None).await?;
                 }
                 CommentApprovalResult::Feedback { body, comment_id } => {
@@ -399,7 +561,7 @@ async fn process_issue(
                             "Feedback received. Revising spec...",
                         )
                         .await?;
-                    let updated = ctx.db.get_issue(issue.github_issue_number)?.unwrap();
+                    let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
                     transitions::spec_drafting::execute(ctx, &updated, Some(&body)).await?;
                 }
                 CommentApprovalResult::Pending => {
@@ -413,7 +575,7 @@ async fn process_issue(
         IssueState::AwaitPRApproval => {
             // First check if PR was merged or closed
             transitions::completion::check(ctx, issue).await?;
-            let updated = ctx.db.get_issue(issue.github_issue_number)?;
+            let updated = ctx.db.get_issue(repo, issue.github_issue_number)?;
             let issue = match &updated {
                 Some(u) if u.state == IssueState::AwaitPRApproval => u,
                 _ => return Ok(()), // State changed (merged/failed), done
@@ -442,7 +604,7 @@ async fn process_issue(
                                 "PR feedback received. Revising implementation...",
                             )
                             .await?;
-                        let updated = ctx.db.get_issue(issue.github_issue_number)?.unwrap();
+                        let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
                         transitions::implementing::execute(ctx, &updated, Some(&body)).await?;
                     }
                     CommentApprovalResult::Approved { comment_id } => {
@@ -515,9 +677,10 @@ async fn check_stale(
 }
 
 async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
-    tracing::info!("Running startup reconciliation");
+    let repo = &ctx.config.repo;
+    tracing::info!(repo = %repo, "Running startup reconciliation");
 
-    let issues = ctx.db.get_all_issues()?;
+    let issues = ctx.db.get_all_issues_for_repo(repo)?;
     for issue in &issues {
         match issue.state {
             // Active states: will re-execute on next poll cycle (idempotent)
@@ -525,6 +688,7 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
             | IssueState::SpecDrafting
             | IssueState::Implementing => {
                 tracing::info!(
+                    repo = %repo,
                     issue = issue.github_issue_number,
                     state = %issue.state,
                     "Active state — will re-execute on next poll"
@@ -533,6 +697,7 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
             // Check for new comments since last processed
             IssueState::AwaitSpecApproval => {
                 tracing::info!(
+                    repo = %repo,
                     issue = issue.github_issue_number,
                     "Checking for spec approval comments during downtime"
                 );
@@ -543,12 +708,14 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                     match approval::check_pr_approval(&*ctx.github, pr_number).await {
                         Ok(PrApprovalResult::Merged) => {
                             tracing::info!(
+                                repo = %repo,
                                 issue = issue.github_issue_number,
                                 "Implementation PR merged during downtime"
                             );
                         }
                         Ok(PrApprovalResult::ClosedWithoutMerge) => {
                             tracing::info!(
+                                repo = %repo,
                                 issue = issue.github_issue_number,
                                 "Implementation PR closed during downtime"
                             );
@@ -568,6 +735,7 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                     ctx.db
                         .update_issue_state(issue.id, IssueState::Done, Some(issue.state))?;
                     tracing::info!(
+                        repo = %repo,
                         issue = issue.github_issue_number,
                         "Issue closed during downtime, marking as Done"
                     );

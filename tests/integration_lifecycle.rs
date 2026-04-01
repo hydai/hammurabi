@@ -1,6 +1,6 @@
 //! Integration test: full happy-path lifecycle
-//! Discovered → SpecDrafting → AwaitSpecApproval → Implementing →
-//! AwaitPRApproval → Done
+//! Discovered -> SpecDrafting -> AwaitSpecApproval -> Implementing ->
+//! AwaitPRApproval -> Done
 
 use std::sync::Arc;
 
@@ -31,7 +31,7 @@ mod worktree;
 
 use claude::mock::MockAiAgent;
 use claude::AiResult;
-use config::Config;
+use config::RepoConfig;
 use db::Database;
 use github::mock::MockGitHubClient;
 use github::{GitHubComment, GitHubIssue, PrStatus};
@@ -39,15 +39,13 @@ use models::IssueState;
 use transitions::TransitionContext;
 use worktree::mock::MockWorktreeManager;
 
-fn test_config() -> Config {
-    Config {
+fn test_config() -> RepoConfig {
+    RepoConfig {
         repo: "owner/repo".to_string(),
         owner: "owner".to_string(),
         repo_name: "repo".to_string(),
-        poll_interval: 60,
         tracking_label: "hammurabi".to_string(),
         stale_timeout_days: 7,
-        api_retry_count: 3,
         ai_model: "test-model".to_string(),
         ai_max_turns: 50,
         ai_effort: "high".to_string(),
@@ -57,7 +55,6 @@ fn test_config() -> Config {
         max_concurrent_agents: 5,
         hooks: crate::config::HooksConfig::default(),
         approvers: vec!["alice".to_string()],
-        github_auth: crate::config::GitHubAuth::Token("token".to_string()),
         spec: None,
         implement: None,
     }
@@ -109,8 +106,8 @@ async fn test_full_lifecycle() {
     };
 
     // Phase 1: Insert as Discovered
-    db.insert_issue(1, "Add user authentication").unwrap();
-    let issue = db.get_issue(1).unwrap().unwrap();
+    db.insert_issue("owner/repo", 1, "Add user authentication").unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::Discovered);
 
     // Phase 2: Spec drafting — posts spec as comment
@@ -118,7 +115,7 @@ async fn test_full_lifecycle() {
         .await
         .unwrap();
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::AwaitSpecApproval);
     assert!(issue.spec_comment_id.is_some());
     assert!(issue.spec_content.is_some());
@@ -154,12 +151,12 @@ async fn test_full_lifecycle() {
     .unwrap();
 
     // Phase 4: Implementation — creates single PR
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     transitions::implementing::execute(&ctx, &issue, None)
         .await
         .unwrap();
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::AwaitPRApproval);
     assert!(issue.impl_pr_number.is_some());
     let impl_pr = issue.impl_pr_number.unwrap();
@@ -168,7 +165,7 @@ async fn test_full_lifecycle() {
     gh.set_pr_status(impl_pr, PrStatus::Merged);
     transitions::completion::check(&ctx, &issue).await.unwrap();
 
-    let issue = db.get_issue(1).unwrap().unwrap();
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::Done);
 
     // Verify usage was logged

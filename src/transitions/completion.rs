@@ -64,22 +64,20 @@ pub async fn check(
 mod tests {
     use super::*;
     use crate::claude::mock::MockAiAgent;
-    use crate::config::Config;
+    use crate::config::RepoConfig;
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::PrStatus;
     use crate::worktree::mock::MockWorktreeManager;
     use std::sync::Arc;
 
-    fn test_config() -> Config {
-        Config {
+    fn test_config() -> RepoConfig {
+        RepoConfig {
             repo: "owner/repo".to_string(),
             owner: "owner".to_string(),
             repo_name: "repo".to_string(),
-            poll_interval: 60,
             tracking_label: "hammurabi".to_string(),
             stale_timeout_days: 7,
-            api_retry_count: 3,
             ai_model: "test-model".to_string(),
             ai_max_turns: 50,
             ai_effort: "high".to_string(),
@@ -89,7 +87,6 @@ mod tests {
             max_concurrent_agents: 5,
             hooks: crate::config::HooksConfig::default(),
             approvers: vec!["alice".to_string()],
-            github_auth: crate::config::GitHubAuth::Token("token".to_string()),
             spec: None,
             implement: None,
         }
@@ -104,10 +101,10 @@ mod tests {
         gh.set_pr_status(10, PrStatus::Merged);
 
         let db = Arc::new(Database::open(":memory:").unwrap());
-        db.insert_issue(1, "Feature X").unwrap();
-        let issue = db.get_issue(1).unwrap().unwrap();
+        db.insert_issue("owner/repo", 1, "Feature X").unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
         db.update_issue_impl_pr(issue.id, 10).unwrap();
-        let issue = db.get_issue(1).unwrap().unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
         let ctx = TransitionContext {
             github: gh.clone(),
@@ -119,7 +116,7 @@ mod tests {
 
         check(&ctx, &issue).await.unwrap();
 
-        let updated = db.get_issue(1).unwrap().unwrap();
+        let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert_eq!(updated.state, IssueState::Done);
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
@@ -134,10 +131,10 @@ mod tests {
         gh.set_pr_status(10, PrStatus::ClosedWithoutMerge);
 
         let db = Arc::new(Database::open(":memory:").unwrap());
-        db.insert_issue(1, "Feature X").unwrap();
-        let issue = db.get_issue(1).unwrap().unwrap();
+        db.insert_issue("owner/repo", 1, "Feature X").unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
         db.update_issue_impl_pr(issue.id, 10).unwrap();
-        let issue = db.get_issue(1).unwrap().unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
         let ctx = TransitionContext {
             github: gh,
@@ -149,7 +146,7 @@ mod tests {
 
         check(&ctx, &issue).await.unwrap();
 
-        let updated = db.get_issue(1).unwrap().unwrap();
+        let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert_eq!(updated.state, IssueState::Failed);
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
@@ -162,8 +159,8 @@ mod tests {
 
         let gh = Arc::new(MockGitHubClient::new());
         let db = Arc::new(Database::open(":memory:").unwrap());
-        db.insert_issue(1, "Feature X").unwrap();
-        let issue = db.get_issue(1).unwrap().unwrap();
+        db.insert_issue("owner/repo", 1, "Feature X").unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
         let ctx = TransitionContext {
             github: gh,
@@ -175,7 +172,7 @@ mod tests {
 
         check(&ctx, &issue).await.unwrap();
 
-        let updated = db.get_issue(1).unwrap().unwrap();
+        let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert_eq!(updated.state, IssueState::Discovered); // unchanged
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;

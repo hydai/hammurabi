@@ -1,6 +1,6 @@
 # Hammurabi
 
-A CLI daemon that monitors a GitHub repository's issue board, orchestrates an AI agent to draft specifications and implement solutions, with mandatory human approval at every step.
+A CLI daemon that monitors one or more GitHub repositories' issue boards, orchestrates an AI agent to draft specifications and implement solutions, with mandatory human approval at every step.
 
 ## Purpose
 
@@ -45,7 +45,9 @@ Repository maintainers who want AI-assisted development with mandatory human app
 - Code review automation (humans review all PRs)
 - Project management beyond issue lifecycle tracking
 - Auto-merging PRs without human approval
-- Multi-repository monitoring (the daemon watches a single repository)
+- Per-repo database files (single shared DB with `repo` column is simpler)
+- Per-repo authentication (all repos share one GitHub token/app)
+- Dynamic repo addition without config reload (config is reloaded each poll cycle, so adding a `[[repos]]` entry takes effect on next cycle)
 
 ## User Journeys
 
@@ -155,7 +157,7 @@ All PRs target the repository's default branch. The spec phase uses a temporary 
 | Worktree already exists | Daemon removes the stale worktree and recreates it |
 | Retry requested | `/retry` comment on the failed issue, or `hammurabi retry <number>`, resets to previous active state. `/retry` comments on non-Failed issues are ignored |
 | Stale blocking state | Issues in blocking states beyond configurable timeout (default: 7 days) receive a reminder comment; no auto-cancellation |
-| Concurrent daemon instance | Only one daemon instance may run per repository. If a second instance is started for the same repository, it exits with an error |
+| Concurrent daemon instance | Only one daemon instance may run per working directory. If a second instance is started, it exits with an error (PID-based lock file) |
 | Branch already exists on remote | The daemon deletes and recreates the branch; `hammurabi/*` branches are daemon-managed |
 
 ### Restart Reconciliation
@@ -176,20 +178,67 @@ The daemon also detects issues closed or deleted externally during downtime and 
 
 The daemon reads configuration from `hammurabi.toml`. Search order: current working directory first, then `~/.config/hammurabi/hammurabi.toml`. The first file found wins. Environment variables override individual parameters using the prefix `HAMMURABI_` (e.g., `HAMMURABI_POLL_INTERVAL=30`).
 
+### Global Parameters
+
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| repo | GitHub repository (owner/repo format) | Required |
 | poll_interval | Seconds between poll cycles | 60 |
-| tracking_label | GitHub label that opts issues into daemon tracking; only labeled issues are processed | hammurabi |
-| stale_timeout_days | Days before a blocking state gets a reminder | 7 |
 | api_retry_count | Consecutive GitHub API failures before transitioning to Failed | 3 |
-| ai_model | Default AI model for all tasks | Required |
+| ai_model | Default AI model for all tasks | Required (globally or per-repo) |
 | ai_max_turns | Default max conversation turns per AI invocation | 50 |
 | ai_effort | Default AI effort level | high |
-| approvers | GitHub usernames authorized to approve (PR merges and `/approve` comments) | Required |
+| ai_timeout_secs | Default total timeout for AI invocations | 3600 |
+| ai_stall_timeout_secs | Default stall timeout (no output) for AI invocations | 0 (disabled) |
+| ai_max_retries | Max automatic retries for transient AI errors | 2 |
+| max_concurrent_agents | Default max concurrent AI agents | 5 |
+| tracking_label | Default GitHub label for issue tracking | hammurabi |
+| stale_timeout_days | Days before a blocking state gets a reminder | 7 |
+| approvers | Default GitHub usernames authorized to approve | Required (globally or per-repo) |
 | github_token | GitHub authentication token | None (falls back to `GITHUB_TOKEN` env var) |
 
-Per-task-type overrides (spec, implement) are supported for ai_model, ai_max_turns, and ai_effort.
+Per-task-type overrides (spec, implement) are supported for ai_model, ai_max_turns, ai_effort, ai_timeout_secs, and ai_stall_timeout_secs.
+
+### Multi-Repository Support
+
+The daemon can monitor multiple repositories from a single configuration file and database. Repositories are configured using a `[[repos]]` array:
+
+```toml
+ai_model = "claude-sonnet-4-6"
+approvers = ["alice"]
+github_token = "ghp_..."
+
+[[repos]]
+repo = "owner/repo-a"
+tracking_label = "hammurabi"
+
+[[repos]]
+repo = "owner/repo-b"
+tracking_label = "auto"
+approvers = ["bob"]           # Override global approvers
+ai_model = "claude-opus-4-6"  # Override global model
+max_concurrent_agents = 2     # Limit agents for this repo
+```
+
+Each `[[repos]]` entry can override: `tracking_label`, `approvers`, `ai_model`, `ai_max_turns`, `ai_effort`, `ai_timeout_secs`, `ai_stall_timeout_secs`, `ai_max_retries`, `max_concurrent_agents`, `hooks`, and `spec`/`implement` task overrides. Fields that remain global only: `poll_interval`, `github_token`/`[github_app]`.
+
+Setting both a top-level `repo` field and `[[repos]]` array is an error.
+
+#### Backward Compatibility
+
+If the config contains a top-level `repo` field instead of `[[repos]]`, it is treated as a single-element repos array. Existing single-repo config files work without changes.
+
+### Per-Repo Architecture
+
+Each configured repository gets its own:
+- `OctocrabClient` (bound to owner/repo)
+- `GitWorktreeManager` (bare clone at `.hammurabi/repos/<owner>/<repo_name>/repo`, worktrees at `.hammurabi/repos/<owner>/<repo_name>/worktrees`)
+- `RepoConfig` (merged global defaults + per-repo overrides)
+
+Shared across all repos: `Database` (single SQLite file with `repo` column), `AiAgent` (stateless), `LockFile`, and the poll loop (iterates over all repos each cycle).
+
+### Database Multi-Repo Schema
+
+The `issues` table includes a `repo` column with a composite unique constraint `UNIQUE(repo, github_issue_number)`, allowing the same issue number in different repos. On startup with a single-repo config, empty `repo` values from pre-migration data are automatically backfilled. With multiple repos configured, unscoped rows trigger a warning.
 
 ## Authentication
 
@@ -204,16 +253,22 @@ If neither is set, the daemon exits with an error on startup.
 
 | Command | Description |
 |---------|-------------|
-| `hammurabi watch <repo>` | Start the daemon, monitoring the specified repository |
-| `hammurabi status` | Display all tracked issues with current state and last activity |
+| `hammurabi watch` | Start the daemon, monitoring repositories from config |
+| `hammurabi watch <repo>` | Start the daemon for a single repository (overrides config) |
+| `hammurabi status` | Display all tracked issues across all repos |
+| `hammurabi status --repo <owner/repo>` | Display tracked issues for a specific repo |
 | `hammurabi retry <issue_number>` | Reset a failed issue to its previous active state |
+| `hammurabi retry <issue_number> --repo <owner/repo>` | Retry with repo disambiguation |
 | `hammurabi reset <issue_number>` | Reset an issue to Discovered state |
+| `hammurabi reset <issue_number> --repo <owner/repo>` | Reset with repo disambiguation |
 
-`hammurabi status` displays a table with these columns: Issue #, Title (truncated to 50 characters), State, Age (time since discovery), and Last Activity (time since last state change). Rows are sorted by state priority: Failed first, then Active states, then Blocking states, then Done.
+`hammurabi status` displays a table with these columns: Repo, Issue #, Title (truncated to 40 characters), State, Age (time since discovery), and Last Activity (time since last state change). Rows are sorted by state priority: Failed first, then Active states, then Blocking states, then Done.
+
+When `--repo` is not specified for `retry`/`reset`, the daemon searches across all repos. If the issue number is ambiguous (exists in multiple repos), it returns an error asking the user to specify `--repo`.
 
 ## Data Model
 
-**Issues**: Each tracked GitHub issue persists its GitHub issue number, title, current state, spec comment ID, spec content, implementation PR number, last processed comment ID (for issue comments), last processed PR comment ID (for PR feedback), previous state (for retry), error message, worktree path, and timestamps.
+**Issues**: Each tracked GitHub issue persists its repository (owner/repo), GitHub issue number, title, current state, spec comment ID, spec content, implementation PR number, last processed comment ID (for issue comments), last processed PR comment ID (for PR feedback), previous state (for retry), error message, worktree path, and timestamps. Issues are uniquely identified by the combination of repository and issue number.
 
 **Usage log**: Each AI invocation records its parent issue, transition name, input and output token counts, model used, and timestamp.
 
