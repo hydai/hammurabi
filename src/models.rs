@@ -75,6 +75,7 @@ impl FromStr for IssueState {
 #[derive(Debug, Clone)]
 pub struct TrackedIssue {
     pub id: i64,
+    pub repo: String,
     pub github_issue_number: u64,
     pub title: String,
     pub state: IssueState,

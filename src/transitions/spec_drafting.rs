@@ -169,22 +169,20 @@ mod tests {
     use super::*;
     use crate::claude::mock::MockAiAgent;
     use crate::claude::AiResult;
-    use crate::config::Config;
+    use crate::config::RepoConfig;
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::GitHubIssue;
     use crate::worktree::mock::MockWorktreeManager;
     use std::sync::Arc;
 
-    fn test_config() -> Config {
-        Config {
+    fn test_config() -> RepoConfig {
+        RepoConfig {
             repo: "owner/repo".to_string(),
             owner: "owner".to_string(),
             repo_name: "repo".to_string(),
-            poll_interval: 60,
             tracking_label: "hammurabi".to_string(),
             stale_timeout_days: 7,
-            api_retry_count: 3,
             ai_model: "test-model".to_string(),
             ai_max_turns: 50,
             ai_effort: "high".to_string(),
@@ -194,7 +192,6 @@ mod tests {
             max_concurrent_agents: 5,
             hooks: crate::config::HooksConfig::default(),
             approvers: vec!["alice".to_string()],
-            github_auth: crate::config::GitHubAuth::Token("token".to_string()),
             spec: None,
             implement: None,
         }
@@ -224,8 +221,8 @@ mod tests {
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let db = Arc::new(Database::open(":memory:").unwrap());
-        db.insert_issue(1, "Add feature X").unwrap();
-        let issue = db.get_issue(1).unwrap().unwrap();
+        db.insert_issue("owner/repo", 1, "Add feature X").unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
         let ctx = TransitionContext {
             github: gh.clone(),
@@ -238,7 +235,7 @@ mod tests {
         execute(&ctx, &issue, None).await.unwrap();
 
         // Verify state updated
-        let updated = db.get_issue(1).unwrap().unwrap();
+        let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert_eq!(updated.state, IssueState::AwaitSpecApproval);
         assert!(updated.spec_comment_id.is_some());
         assert!(updated.spec_content.is_some());

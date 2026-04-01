@@ -27,22 +27,32 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the daemon, monitoring the specified repository
+    /// Start the daemon, monitoring configured repositories
     Watch {
-        /// GitHub repository in owner/repo format
-        repo: String,
+        /// GitHub repository in owner/repo format (overrides config; for single-repo mode)
+        repo: Option<String>,
     },
     /// Display all tracked issues with current state and last activity
-    Status,
+    Status {
+        /// Filter by repository (owner/repo format)
+        #[arg(long)]
+        repo: Option<String>,
+    },
     /// Reset a failed issue to its previous active state
     Retry {
         /// GitHub issue number
         issue_number: u64,
+        /// Repository (owner/repo) — required if issue number is ambiguous
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Reset an issue to Discovered state
     Reset {
         /// GitHub issue number
         issue_number: u64,
+        /// Repository (owner/repo) — required if issue number is ambiguous
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -59,21 +69,43 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Watch { repo } => {
-            tracing::info!("Starting daemon for {}", repo);
+            // Set HAMMURABI_REPO before config::load() so the loader can use
+            // it as the legacy repo when no repo/[[repos]] is in the config file.
+            if let Some(ref r) = repo {
+                std::env::set_var("HAMMURABI_REPO", r);
+            }
 
-            // Override repo in config from CLI arg
-            std::env::set_var("HAMMURABI_REPO", &repo);
-            let config = config::load()?;
+            let mut config = config::load()?;
+
+            // If CLI repo was given and config has [[repos]], override the list
+            if let Some(ref r) = repo {
+                tracing::info!("Starting daemon for {}", r);
+                let base = config.repos.first();
+                let repo_config = config::RepoConfig::from_cli_override(r, base)?;
+                config.repos = vec![repo_config];
+            } else {
+                tracing::info!("Starting daemon (repos from config)");
+            }
+
+            tracing::info!(
+                repos = config.repos.iter().map(|r| r.repo.as_str()).collect::<Vec<_>>().join(", "),
+                "Monitoring repositories"
+            );
 
             poller::run_daemon(config).await?;
         }
-        Commands::Status => {
+        Commands::Status { repo } => {
             let db = open_db()?;
-            let mut issues = db.get_all_issues()?;
+            let mut issues = if let Some(ref r) = repo {
+                db.get_all_issues_for_repo(r)?
+            } else {
+                db.get_all_issues()?
+            };
             issues.sort_by(|a, b| {
                 a.state
                     .sort_priority()
                     .cmp(&b.state.sort_priority())
+                    .then(a.repo.cmp(&b.repo))
                     .then(a.github_issue_number.cmp(&b.github_issue_number))
             });
 
@@ -83,17 +115,25 @@ async fn main() -> anyhow::Result<()> {
             }
 
             println!(
-                "{:<8} {:<52} {:<22} {:<12} {}",
-                "Issue #", "Title", "State", "Age", "Last Activity"
+                "{:<25} {:<8} {:<42} {:<22} {:<12} {}",
+                "Repo", "Issue #", "Title", "State", "Age", "Last Activity"
             );
-            println!("{}", "-".repeat(110));
+            println!("{}", "-".repeat(125));
 
             let now = chrono::Utc::now().naive_utc();
             for issue in &issues {
-                let title = if issue.title.len() > 50 {
-                    format!("{}...", &issue.title[..47])
+                let title = if issue.title.chars().count() > 40 {
+                    let truncated: String = issue.title.chars().take(37).collect();
+                    format!("{}...", truncated)
                 } else {
                     issue.title.clone()
+                };
+
+                let repo_display = if issue.repo.chars().count() > 23 {
+                    let truncated: String = issue.repo.chars().take(20).collect();
+                    format!("{}...", truncated)
+                } else {
+                    issue.repo.clone()
                 };
 
                 let age = if let Ok(created) =
@@ -113,7 +153,8 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 println!(
-                    "{:<8} {:<52} {:<22} {:<12} {}",
+                    "{:<25} {:<8} {:<42} {:<22} {:<12} {}",
+                    repo_display,
                     format!("#{}", issue.github_issue_number),
                     title,
                     issue.state,
@@ -122,16 +163,15 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         }
-        Commands::Retry { issue_number } => {
+        Commands::Retry { issue_number, repo } => {
             let db = open_db()?;
-            let issue = db
-                .get_issue(issue_number)?
-                .ok_or_else(|| anyhow::anyhow!("issue #{} not tracked", issue_number))?;
+            let issue = resolve_issue(&db, issue_number, repo.as_deref())?;
 
             if issue.state != IssueState::Failed {
                 anyhow::bail!(
-                    "issue #{} is in {} state, not Failed. Only Failed issues can be retried.",
+                    "issue #{} ({}) is in {} state, not Failed. Only Failed issues can be retried.",
                     issue_number,
+                    issue.repo,
                     issue.state
                 );
             }
@@ -142,25 +182,51 @@ async fn main() -> anyhow::Result<()> {
 
             db.update_issue_state(issue.id, prev, None)?;
             println!(
-                "Issue #{} reset from Failed to {}. Will be processed on next poll cycle.",
-                issue_number, prev
+                "Issue #{} ({}) reset from Failed to {}. Will be processed on next poll cycle.",
+                issue_number, issue.repo, prev
             );
         }
-        Commands::Reset { issue_number } => {
+        Commands::Reset { issue_number, repo } => {
             let db = open_db()?;
-            let issue = db
-                .get_issue(issue_number)?
-                .ok_or_else(|| anyhow::anyhow!("issue #{} not tracked", issue_number))?;
+            let issue = resolve_issue(&db, issue_number, repo.as_deref())?;
 
             db.update_issue_state(issue.id, IssueState::Discovered, None)?;
             println!(
-                "Issue #{} reset to Discovered. Will be processed on next poll cycle.",
-                issue_number
+                "Issue #{} ({}) reset to Discovered. Will be processed on next poll cycle.",
+                issue_number, issue.repo
             );
         }
     }
 
     Ok(())
+}
+
+/// Resolve an issue by number, optionally filtered by repo.
+/// If no repo is specified and the issue number is ambiguous, returns an error.
+fn resolve_issue(
+    db: &Database,
+    issue_number: u64,
+    repo: Option<&str>,
+) -> Result<crate::models::TrackedIssue, anyhow::Error> {
+    if let Some(r) = repo {
+        db.get_issue(r, issue_number)?
+            .ok_or_else(|| anyhow::anyhow!("issue #{} not tracked in repo {}", issue_number, r))
+    } else {
+        let issues = db.get_issue_any_repo(issue_number)?;
+        match issues.len() {
+            0 => Err(anyhow::anyhow!("issue #{} not tracked", issue_number)),
+            1 => Ok(issues.into_iter().next().unwrap()),
+            n => {
+                let repos: Vec<_> = issues.iter().map(|i| i.repo.as_str()).collect();
+                Err(anyhow::anyhow!(
+                    "issue #{} exists in {} repos: {}. Use --repo to disambiguate.",
+                    issue_number,
+                    n,
+                    repos.join(", ")
+                ))
+            }
+        }
+    }
 }
 
 fn open_db() -> Result<Database, anyhow::Error> {
