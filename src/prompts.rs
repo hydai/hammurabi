@@ -634,20 +634,52 @@ Your review MUST follow this exact format:
 /// Parse a review verdict from AI output. Returns true for PASS, false for FAIL.
 /// Defaults to PASS (optimistic) if the verdict cannot be parsed.
 pub fn parse_review_verdict(ai_output: &str) -> bool {
-    // Look for the "## Verdict" section
-    for line in ai_output.lines() {
-        let trimmed = line.trim();
-        // Check lines that follow "## Verdict" or contain verdict keywords
-        if trimmed.starts_with("## Verdict") {
-            continue;
+    /// Check if a line is an ambiguous template placeholder (contains both PASS and FAIL,
+    /// or is wrapped in brackets indicating a template choice like `[PASS | FAIL]`).
+    fn is_template_line(upper: &str) -> bool {
+        // Lines containing both PASS and FAIL are template placeholders
+        if upper.contains("PASS") && upper.contains("FAIL") {
+            return true;
         }
-        // Look for PASS/FAIL after the verdict header
+        // Lines like "[PASS: ... ]" or "[FAIL: ... ]" with surrounding brackets
+        if upper.contains('[') && upper.contains(']') && (upper.contains("PASS") || upper.contains("FAIL")) {
+            return true;
+        }
+        false
+    }
+
+    /// Extract an unambiguous verdict from a line. Returns Some(true) for PASS,
+    /// Some(false) for FAIL, or None if the line is ambiguous/template/irrelevant.
+    fn parse_verdict_line(trimmed: &str) -> Option<bool> {
         let upper = trimmed.to_uppercase();
+        if is_template_line(&upper) {
+            return None;
+        }
+        // Accept PASS/FAIL only as leading tokens (e.g. "PASS: Ready" or "FAIL: 2 blocking")
+        if upper.starts_with("PASS") {
+            return Some(true);
+        }
+        if upper.starts_with("FAIL") {
+            return Some(false);
+        }
+        // Also accept lines with clear verdict keywords
         if upper.contains("FAIL") && (upper.contains("VERDICT") || upper.contains("BLOCKING")) {
-            return false;
+            return Some(false);
         }
         if upper.contains("PASS") && (upper.contains("VERDICT") || upper.contains("READY")) {
-            return true;
+            return Some(true);
+        }
+        None
+    }
+
+    // First pass: look for lines with verdict keywords anywhere
+    for line in ai_output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## Verdict") || trimmed.starts_with("## Review Summary") {
+            continue;
+        }
+        if let Some(result) = parse_verdict_line(trimmed) {
+            return result;
         }
     }
 
@@ -660,12 +692,8 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
             continue;
         }
         if in_verdict_section && !trimmed.is_empty() {
-            let upper = trimmed.to_uppercase();
-            if upper.contains("FAIL") {
-                return false;
-            }
-            if upper.contains("PASS") {
-                return true;
+            if let Some(result) = parse_verdict_line(trimmed) {
+                return result;
             }
             // Only check the first non-empty line after ## Verdict
             break;
@@ -685,12 +713,8 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
             continue;
         }
         if in_summary && !trimmed.is_empty() {
-            let upper = trimmed.to_uppercase();
-            if upper.contains("FAIL") {
-                return false;
-            }
-            if upper.contains("PASS") {
-                return true;
+            if let Some(result) = parse_verdict_line(trimmed) {
+                return result;
             }
             break;
         }
@@ -879,6 +903,20 @@ mod tests {
     fn test_parse_review_verdict_fail_in_summary() {
         let output = "## Review Summary\nFAIL -- Missing tests\n\n## Findings\nSome findings here";
         assert!(!parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_template_line_defaults_pass() {
+        // AI echoes the template placeholder unchanged — should not misclassify as FAIL
+        let output = "## Review Summary\nThe code looks good.\n\n## Verdict\n[PASS: Ready for human review | FAIL: N blocking issues must be addressed]";
+        assert!(parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_template_with_brackets_defaults_pass() {
+        // Bracket-wrapped FAIL should be treated as template, not real failure
+        let output = "## Verdict\n[FAIL: 0 blocking issues must be addressed]";
+        assert!(parse_review_verdict(output));
     }
 
     #[test]

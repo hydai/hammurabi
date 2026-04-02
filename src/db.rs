@@ -170,20 +170,22 @@ impl Database {
         let has_bypass = conn
             .prepare("SELECT bypass FROM issues LIMIT 0")
             .is_ok();
-        if !has_bypass {
-            let _ = conn.execute_batch(
+        if table_exists && !has_bypass {
+            conn.execute_batch(
                 "ALTER TABLE issues ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0;",
-            );
+            )
+            .map_err(|e| HammurabiError::Database(format!("bypass column migration failed: {}", e)))?;
         }
 
         // Add review_count column if missing (incremental migration)
         let has_review_count = conn
             .prepare("SELECT review_count FROM issues LIMIT 0")
             .is_ok();
-        if !has_review_count {
-            let _ = conn.execute_batch(
+        if table_exists && !has_review_count {
+            conn.execute_batch(
                 "ALTER TABLE issues ADD COLUMN review_count INTEGER NOT NULL DEFAULT 0;",
-            );
+            )
+            .map_err(|e| HammurabiError::Database(format!("review_count column migration failed: {}", e)))?;
         }
 
         // Create tables if they don't exist (fresh install or post-migration)

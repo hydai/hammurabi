@@ -20,7 +20,10 @@ pub async fn execute(
         return Ok(());
     }
 
-    let is_revision = issue.impl_pr_number.is_some() && feedback.is_some();
+    // Revision if feedback is provided — whether from PR review (impl_pr_number set)
+    // or from auto-review failure (impl_pr_number unset but impl branch exists).
+    let is_revision = feedback.is_some();
+    let has_pr = issue.impl_pr_number.is_some();
 
     tracing::info!(
         issue = issue.github_issue_number,
@@ -176,7 +179,7 @@ pub async fn execute(
     let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
     ctx.worktree.push_branch(&branch_name).await?;
 
-    if is_revision {
+    if has_pr {
         // PR already exists (human PR feedback revision) — go back to AwaitPRApproval
         ctx.db.update_issue_state(
             issue.id,
@@ -198,7 +201,8 @@ pub async fn execute(
             "Implementation revised and pushed"
         );
     } else {
-        // First implementation — send to Reviewing for auto-review before PR creation
+        // No PR yet — send to Reviewing for auto-review before PR creation
+        // (applies to both first implementation and auto-review revision)
         ctx.db.update_issue_state(
             issue.id,
             IssueState::Reviewing,
@@ -207,15 +211,18 @@ pub async fn execute(
         ctx.db
             .update_issue_worktree(issue.id, Some(&worktree_str))?;
 
+        let comment_msg = if is_revision {
+            "Implementation revised based on review feedback. Running auto-review..."
+        } else {
+            "Implementation complete. Running auto-review..."
+        };
         ctx.github
-            .post_issue_comment(
-                issue.github_issue_number,
-                "Implementation complete. Running auto-review...",
-            )
+            .post_issue_comment(issue.github_issue_number, comment_msg)
             .await?;
 
         tracing::info!(
             issue = issue.github_issue_number,
+            revision = is_revision,
             "Implementation complete, transitioning to review"
         );
     }
