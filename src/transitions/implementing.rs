@@ -20,7 +20,10 @@ pub async fn execute(
         return Ok(());
     }
 
-    let is_revision = issue.impl_pr_number.is_some() && feedback.is_some();
+    // Revision if feedback is provided — whether from PR review (impl_pr_number set)
+    // or from auto-review failure (impl_pr_number unset but impl branch exists).
+    let is_revision = feedback.is_some();
+    let has_pr = issue.impl_pr_number.is_some();
 
     tracing::info!(
         issue = issue.github_issue_number,
@@ -176,7 +179,7 @@ pub async fn execute(
     let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
     ctx.worktree.push_branch(&branch_name).await?;
 
-    if is_revision {
+    if has_pr {
         // PR already exists (human PR feedback revision) — go back to AwaitPRApproval
         ctx.db.update_issue_state(
             issue.id,
@@ -198,7 +201,8 @@ pub async fn execute(
             "Implementation revised and pushed"
         );
     } else {
-        // First implementation — send to Reviewing for auto-review before PR creation
+        // No PR yet — send to Reviewing for auto-review before PR creation
+        // (applies to both first implementation and auto-review revision)
         ctx.db.update_issue_state(
             issue.id,
             IssueState::Reviewing,
@@ -207,15 +211,18 @@ pub async fn execute(
         ctx.db
             .update_issue_worktree(issue.id, Some(&worktree_str))?;
 
+        let comment_msg = if is_revision {
+            "Implementation revised based on review feedback. Running auto-review..."
+        } else {
+            "Implementation complete. Running auto-review..."
+        };
         ctx.github
-            .post_issue_comment(
-                issue.github_issue_number,
-                "Implementation complete. Running auto-review...",
-            )
+            .post_issue_comment(issue.github_issue_number, comment_msg)
             .await?;
 
         tracing::info!(
             issue = issue.github_issue_number,
+            revision = is_revision,
             "Implementation complete, transitioning to review"
         );
     }
@@ -418,6 +425,72 @@ mod tests {
         let comments = gh.created_comments.lock().unwrap();
         assert_eq!(comments.len(), 1);
         assert!(comments[0].1.contains("revised"));
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn test_implementing_with_feedback_no_pr_uses_impl_branch_and_goes_to_reviewing() {
+        // Auto-review revision path: feedback provided but no PR exists yet.
+        // Should base worktree off the impl branch and transition to Reviewing.
+        let tmp = std::env::temp_dir().join("hammurabi-test-impl-review-revision");
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+
+        let gh = Arc::new(MockGitHubClient::new());
+        gh.add_issue(GitHubIssue {
+            number: 1,
+            title: "Add feature X".to_string(),
+            body: "We need feature X".to_string(),
+            labels: vec!["hammurabi".to_string()],
+            state: "Open".to_string(),
+            user_login: "alice".to_string(),
+        });
+
+        let ai = Arc::new(MockAiAgent::new());
+        ai.set_default_response(AiResult {
+            content: "Revised implementation".to_string(),
+            session_id: Some("sess-review-rev".to_string()),
+            input_tokens: 600,
+            output_tokens: 400,
+        });
+
+        let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
+        let db = Arc::new(Database::open(":memory:").unwrap());
+        db.insert_issue("owner/repo", 1, "Add feature X").unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        db.update_issue_spec_content(issue.id, "# Spec\nDo X").unwrap();
+        // Note: impl_pr_number is NOT set (no PR yet)
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert!(issue.impl_pr_number.is_none());
+
+        let ctx = TransitionContext {
+            github: gh.clone(),
+            ai,
+            worktree: wt.clone(),
+            db: db.clone(),
+            config: Arc::new(test_config()),
+        };
+
+        execute(&ctx, &issue, Some("Missing tests found in review")).await.unwrap();
+
+        // Should NOT create a PR (no PR path — goes to Reviewing)
+        let prs = gh.created_prs.lock().unwrap();
+        assert_eq!(prs.len(), 0);
+
+        // Should transition to Reviewing (not AwaitPRApproval since no PR exists)
+        let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert_eq!(updated.state, IssueState::Reviewing);
+
+        // Worktree should be based on the impl branch (revision), not default branch
+        let wts = wt.created_worktrees.lock().unwrap();
+        assert_eq!(wts.len(), 1);
+        assert_eq!(wts[0].2, "hammurabi/1-impl");
+
+        // Comment should mention revision + auto-review
+        let comments = gh.created_comments.lock().unwrap();
+        assert_eq!(comments.len(), 1);
+        assert!(comments[0].1.contains("revised"));
+        assert!(comments[0].1.contains("auto-review"));
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }

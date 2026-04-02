@@ -634,20 +634,71 @@ Your review MUST follow this exact format:
 /// Parse a review verdict from AI output. Returns true for PASS, false for FAIL.
 /// Defaults to PASS (optimistic) if the verdict cannot be parsed.
 pub fn parse_review_verdict(ai_output: &str) -> bool {
-    // Look for the "## Verdict" section
-    for line in ai_output.lines() {
-        let trimmed = line.trim();
-        // Check lines that follow "## Verdict" or contain verdict keywords
-        if trimmed.starts_with("## Verdict") {
-            continue;
+    /// Check if a line is an ambiguous template placeholder (contains both PASS and FAIL,
+    /// or is a bracket-wrapped template choice like `[PASS: ... | FAIL: ...]`).
+    fn is_template_line(upper: &str) -> bool {
+        // Lines containing both PASS and FAIL are template placeholders
+        if upper.contains("PASS") && upper.contains("FAIL") {
+            return true;
         }
-        // Look for PASS/FAIL after the verdict header
+        // Bracket-wrapped lines are only templates if they contain choice syntax "|"
+        // (e.g. "[PASS | FAIL]"). Unambiguous bracketed verdicts like "[FAIL: Missing coverage]"
+        // should be parsed as real verdicts by stripping outer brackets.
+        let trimmed = upper.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.contains('|') {
+            return true;
+        }
+        false
+    }
+
+    /// Check if the character after a keyword match is a valid token boundary
+    /// (not a letter/digit, meaning PASS/FAIL is a standalone token).
+    fn has_token_boundary(text: &str, keyword_len: usize) -> bool {
+        text.len() == keyword_len
+            || !text.as_bytes()[keyword_len].is_ascii_alphanumeric()
+    }
+
+    /// Extract an unambiguous verdict from a line. Returns Some(true) for PASS,
+    /// Some(false) for FAIL, or None if the line is ambiguous/template/irrelevant.
+    fn parse_verdict_line(trimmed: &str) -> Option<bool> {
         let upper = trimmed.to_uppercase();
+        if is_template_line(&upper) {
+            return None;
+        }
+        // Strip outer brackets so "[FAIL: Missing coverage]" is parsed as "FAIL: Missing coverage"
+        let upper = upper.trim();
+        let upper = if upper.starts_with('[') && upper.ends_with(']') {
+            &upper[1..upper.len() - 1]
+        } else {
+            upper
+        };
+        let upper = upper.trim();
+        // Accept PASS/FAIL only as leading tokens with a boundary after them
+        // (e.g. "PASS: Ready" or "FAIL -- 2 blocking", but not "PASSWORD" or "PASSING")
+        if upper.starts_with("PASS") && has_token_boundary(upper, 4) {
+            return Some(true);
+        }
+        if upper.starts_with("FAIL") && has_token_boundary(upper, 4) {
+            return Some(false);
+        }
+        // Also accept lines with clear verdict keywords
         if upper.contains("FAIL") && (upper.contains("VERDICT") || upper.contains("BLOCKING")) {
-            return false;
+            return Some(false);
         }
         if upper.contains("PASS") && (upper.contains("VERDICT") || upper.contains("READY")) {
-            return true;
+            return Some(true);
+        }
+        None
+    }
+
+    // First pass: look for lines with verdict keywords anywhere
+    for line in ai_output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## Verdict") || trimmed.starts_with("## Review Summary") {
+            continue;
+        }
+        if let Some(result) = parse_verdict_line(trimmed) {
+            return result;
         }
     }
 
@@ -660,12 +711,8 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
             continue;
         }
         if in_verdict_section && !trimmed.is_empty() {
-            let upper = trimmed.to_uppercase();
-            if upper.contains("FAIL") {
-                return false;
-            }
-            if upper.contains("PASS") {
-                return true;
+            if let Some(result) = parse_verdict_line(trimmed) {
+                return result;
             }
             // Only check the first non-empty line after ## Verdict
             break;
@@ -685,12 +732,8 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
             continue;
         }
         if in_summary && !trimmed.is_empty() {
-            let upper = trimmed.to_uppercase();
-            if upper.contains("FAIL") {
-                return false;
-            }
-            if upper.contains("PASS") {
-                return true;
+            if let Some(result) = parse_verdict_line(trimmed) {
+                return result;
             }
             break;
         }
@@ -879,6 +922,50 @@ mod tests {
     fn test_parse_review_verdict_fail_in_summary() {
         let output = "## Review Summary\nFAIL -- Missing tests\n\n## Findings\nSome findings here";
         assert!(!parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_template_line_defaults_pass() {
+        // AI echoes the template placeholder unchanged — should not misclassify as FAIL
+        let output = "## Review Summary\nThe code looks good.\n\n## Verdict\n[PASS: Ready for human review | FAIL: N blocking issues must be addressed]";
+        assert!(parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_bracketed_fail_detected() {
+        // Unambiguous bracket-wrapped FAIL (no choice syntax) should be parsed as real FAIL
+        let output = "## Verdict\n[FAIL: 0 blocking issues must be addressed]";
+        assert!(!parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_bracketed_pass_detected() {
+        // Unambiguous bracket-wrapped PASS should be parsed as real PASS
+        let output = "## Verdict\n[PASS: Ready for human review]";
+        assert!(parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_no_false_positive_password() {
+        // "PASSWORD" should not match as "PASS" — requires token boundary
+        let output = "## Verdict\nPASSWORD reset required for deployment";
+        // No valid verdict token, defaults to PASS
+        assert!(parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_no_false_positive_passing() {
+        // "PASSING" should not match as "PASS"
+        let output = "## Review Summary\nPASSING tests found but more needed\n\n## Verdict\nFAIL: Missing coverage";
+        assert!(!parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_no_false_positive_failure() {
+        // "FAILURE" should NOT match FAIL as a verdict token (no boundary after "FAIL")
+        // FAILURE is skipped due to missing token boundary; later PASS verdict should be used instead
+        let output = "## Verdict\nFAILURE mode not applicable\nPASS: All good";
+        assert!(parse_review_verdict(output));
     }
 
     #[test]
