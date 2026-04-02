@@ -54,6 +54,8 @@ fn test_config() -> RepoConfig {
         hooks: crate::config::HooksConfig::default(),
         approvers: vec!["alice".to_string()],
         bypass_label: None,
+        review: None,
+        review_max_iterations: 2,
         spec: None,
         implement: None,
     }
@@ -207,8 +209,10 @@ async fn test_implementation_failure_and_retry() {
         .unwrap();
 
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
-    assert_eq!(issue.state, IssueState::AwaitPRApproval);
-    assert!(issue.impl_pr_number.is_some());
+    // First implementation now goes to Reviewing (auto-review gate)
+    assert_eq!(issue.state, IssueState::Reviewing);
+    // PR is created during reviewing transition, not implementing
+    assert!(issue.impl_pr_number.is_none());
 
     let _ = tokio::fs::remove_dir_all(&tmp).await;
 }

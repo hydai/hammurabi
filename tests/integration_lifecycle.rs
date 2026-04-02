@@ -1,6 +1,6 @@
 //! Integration test: full happy-path lifecycle
 //! Discovered -> SpecDrafting -> AwaitSpecApproval -> Implementing ->
-//! AwaitPRApproval -> Done
+//! Reviewing -> AwaitPRApproval -> Done
 
 use std::sync::Arc;
 
@@ -56,6 +56,8 @@ fn test_config() -> RepoConfig {
         hooks: crate::config::HooksConfig::default(),
         approvers: vec!["alice".to_string()],
         bypass_label: None,
+        review: None,
+        review_max_iterations: 2,
         spec: None,
         implement: None,
     }
@@ -79,7 +81,7 @@ async fn test_full_lifecycle() {
     let ai = Arc::new(MockAiAgent::new());
     // Spec drafting response
     ai.set_response(
-        "producing a SPEC.md",
+        "Architect agent",
         AiResult {
             content: "# SPEC\n\nAuthentication feature".to_string(),
             session_id: Some("sess-spec".to_string()),
@@ -159,11 +161,20 @@ async fn test_full_lifecycle() {
         .unwrap();
 
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+    // First implementation now goes to Reviewing (auto-review gate)
+    assert_eq!(issue.state, IssueState::Reviewing);
+    // PR is created during reviewing transition, not implementing
+    assert!(issue.impl_pr_number.is_none());
+
+    // Phase 5: Auto-review (mock returns PASS verdict via default response)
+    transitions::reviewing::execute(&ctx, &issue).await.unwrap();
+
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::AwaitPRApproval);
     assert!(issue.impl_pr_number.is_some());
     let impl_pr = issue.impl_pr_number.unwrap();
 
-    // Phase 5: Merge implementation PR
+    // Phase 6: Merge implementation PR
     gh.set_pr_status(impl_pr, PrStatus::Merged);
     transitions::completion::check(&ctx, &issue).await.unwrap();
 
@@ -172,7 +183,7 @@ async fn test_full_lifecycle() {
 
     // Verify usage was logged
     let usage = db.get_usage_by_issue(issue.id).unwrap();
-    assert!(usage.len() >= 2); // spec + implementation
+    assert!(usage.len() >= 2); // spec + implementation + review
 
     let _ = tokio::fs::remove_dir_all(&tmp).await;
 }
@@ -196,7 +207,7 @@ async fn test_bypass_spec_auto_approval() {
 
     let ai = Arc::new(MockAiAgent::new());
     ai.set_response(
-        "producing a SPEC.md",
+        "Architect agent",
         AiResult {
             content: "# SPEC\n\nFix the typo".to_string(),
             session_id: Some("sess-spec".to_string()),
@@ -258,10 +269,18 @@ async fn test_bypass_spec_auto_approval() {
         .unwrap();
 
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+    // First implementation now goes to Reviewing (auto-review gate)
+    assert_eq!(issue.state, IssueState::Reviewing);
+    assert!(issue.impl_pr_number.is_none());
+
+    // Phase 4: Auto-review (default response = optimistic PASS)
+    transitions::reviewing::execute(&ctx, &issue).await.unwrap();
+
+    let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::AwaitPRApproval);
     assert!(issue.impl_pr_number.is_some());
 
-    // Phase 4: PR still needs human merge even in bypass mode
+    // Phase 5: PR still needs human merge even in bypass mode
     let pr = issue.impl_pr_number.unwrap();
     gh.set_pr_status(pr, PrStatus::Merged);
     transitions::completion::check(&ctx, &issue).await.unwrap();
