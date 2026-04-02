@@ -691,22 +691,38 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
         None
     }
 
-    // First pass: look for lines with verdict keywords anywhere
+    // First pass: look for lines with verdict keywords anywhere.
+    // For header lines like "## Verdict FAIL: ..." or "## Review Summary PASS",
+    // strip the header prefix and parse the remainder so inline verdicts aren't skipped.
     for line in ai_output.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("## Verdict") || trimmed.starts_with("## Review Summary") {
+        let verdict_candidate = if let Some(rest) = trimmed.strip_prefix("## Verdict") {
+            rest.trim_start()
+        } else if let Some(rest) = trimmed.strip_prefix("## Review Summary") {
+            rest.trim_start()
+        } else {
+            trimmed
+        };
+        if verdict_candidate.is_empty() {
             continue;
         }
-        if let Some(result) = parse_verdict_line(trimmed) {
+        if let Some(result) = parse_verdict_line(verdict_candidate) {
             return result;
         }
     }
 
-    // Second pass: look specifically for "## Verdict" followed by content
+    // Second pass: look specifically for "## Verdict" section -- check both the
+    // header line itself (inline verdict) and the first non-empty line after it.
     let mut in_verdict_section = false;
     for line in ai_output.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("## Verdict") {
+        if let Some(rest) = trimmed.strip_prefix("## Verdict") {
+            let rest = rest.trim_start();
+            if !rest.is_empty() {
+                if let Some(result) = parse_verdict_line(rest) {
+                    return result;
+                }
+            }
             in_verdict_section = true;
             continue;
         }
@@ -714,20 +730,24 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
             if let Some(result) = parse_verdict_line(trimmed) {
                 return result;
             }
-            // Only check the first non-empty line after ## Verdict
             break;
         }
-        // A new section header resets the search
         if in_verdict_section && trimmed.starts_with("## ") {
             break;
         }
     }
 
-    // Also check ## Review Summary for PASS/FAIL
+    // Also check ## Review Summary section (same inline + next-line logic)
     let mut in_summary = false;
     for line in ai_output.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("## Review Summary") {
+        if let Some(rest) = trimmed.strip_prefix("## Review Summary") {
+            let rest = rest.trim_start();
+            if !rest.is_empty() {
+                if let Some(result) = parse_verdict_line(rest) {
+                    return result;
+                }
+            }
             in_summary = true;
             continue;
         }

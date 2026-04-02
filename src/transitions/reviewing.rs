@@ -279,6 +279,7 @@ pub async fn execute(
             )?;
             ctx.db.update_issue_impl_pr(issue.id, pr_number)?;
             ctx.db.update_issue_review_feedback(issue.id, None)?;
+            ctx.db.reset_review_count(issue.id)?;
 
             // Best-effort comment: DB state is already committed
             if let Err(e) = ctx
