@@ -8,6 +8,8 @@ use super::TransitionContext;
 
 /// Create a PR, handling the case where one already exists for the head branch
 /// (e.g., after a crash between PR creation and DB persistence).
+/// On any creation failure, attempts to find an existing open PR for the branch
+/// before returning the original error.
 async fn create_or_find_pr(
     ctx: &TransitionContext,
     title: &str,
@@ -22,23 +24,21 @@ async fn create_or_find_pr(
     {
         Ok(pr_number) => Ok(pr_number),
         Err(err) => {
-            let err_msg = err.to_string();
-            if err_msg.contains("pull request already exists") {
-                tracing::warn!(
-                    branch = %branch_name,
-                    "PR already exists for head branch; looking up existing PR"
-                );
-                ctx.github
-                    .find_pull_request_by_head(branch_name)
-                    .await?
-                    .ok_or_else(|| {
-                        HammurabiError::GitHub(format!(
-                            "PR reportedly exists for {} but could not be found",
-                            branch_name
-                        ))
-                    })
-            } else {
-                Err(err)
+            tracing::warn!(
+                branch = %branch_name,
+                error = %err,
+                "Failed to create PR; attempting to find existing PR by head branch"
+            );
+            match ctx.github.find_pull_request_by_head(branch_name).await? {
+                Some(pr_number) => {
+                    tracing::info!(
+                        branch = %branch_name,
+                        pr = pr_number,
+                        "Using existing PR after creation failure"
+                    );
+                    Ok(pr_number)
+                }
+                None => Err(err),
             }
         }
     }

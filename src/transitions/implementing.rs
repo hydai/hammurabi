@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_implementing_creates_pr() {
+    async fn test_implementing_transitions_to_reviewing() {
         let tmp = std::env::temp_dir().join("hammurabi-test-impl");
         let _ = tokio::fs::remove_dir_all(&tmp).await;
 

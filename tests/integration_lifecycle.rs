@@ -183,7 +183,7 @@ async fn test_full_lifecycle() {
 
     // Verify usage was logged
     let usage = db.get_usage_by_issue(issue.id).unwrap();
-    assert!(usage.len() >= 2); // spec + implementation + review
+    assert!(usage.len() >= 3); // spec + implementation + review
 
     let _ = tokio::fs::remove_dir_all(&tmp).await;
 }

@@ -807,12 +807,16 @@ pub mod mock {
         ) -> Result<Option<u64>, HammurabiError> {
             let prs = self.created_prs.lock().unwrap();
             let statuses = self.pr_statuses.lock().unwrap();
-            // Search created PRs for one matching the head branch that is still open
+            // PR numbers are assigned from next_pr_number (default 100) upward.
+            // Collect actual PR numbers in insertion order to match created_prs indices.
+            let mut pr_numbers: Vec<u64> = statuses.keys().cloned().collect();
+            pr_numbers.sort_unstable();
             for (i, (_, pr_head, _, _)) in prs.iter().enumerate() {
                 if pr_head == head {
-                    let pr_number = (i + 1) as u64; // PR numbers start at 1
-                    if let Some(PrStatus::Open) = statuses.get(&pr_number) {
-                        return Ok(Some(pr_number));
+                    if let Some(&pr_number) = pr_numbers.get(i) {
+                        if let Some(PrStatus::Open) = statuses.get(&pr_number) {
+                            return Ok(Some(pr_number));
+                        }
                     }
                 }
             }

@@ -568,7 +568,8 @@ pub fn load() -> Result<Config, HammurabiError> {
             review: entry.review.clone().or_else(|| global_review.clone()),
             review_max_iterations: entry
                 .review_max_iterations
-                .unwrap_or(global_review_max_iterations),
+                .unwrap_or(global_review_max_iterations)
+                .max(1),
             spec: entry.spec.clone().or_else(|| global_spec.clone()),
             implement: entry.implement.clone().or_else(|| global_implement.clone()),
         });
