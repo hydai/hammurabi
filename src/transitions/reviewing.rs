@@ -6,6 +6,44 @@ use crate::prompts;
 
 use super::TransitionContext;
 
+/// Create a PR, handling the case where one already exists for the head branch
+/// (e.g., after a crash between PR creation and DB persistence).
+async fn create_or_find_pr(
+    ctx: &TransitionContext,
+    title: &str,
+    branch_name: &str,
+    default_branch: &str,
+    body: &str,
+) -> Result<u64, HammurabiError> {
+    match ctx
+        .github
+        .create_pull_request(title, branch_name, default_branch, body)
+        .await
+    {
+        Ok(pr_number) => Ok(pr_number),
+        Err(err) => {
+            let err_msg = err.to_string();
+            if err_msg.contains("pull request already exists") {
+                tracing::warn!(
+                    branch = %branch_name,
+                    "PR already exists for head branch; looking up existing PR"
+                );
+                ctx.github
+                    .find_pull_request_by_head(branch_name)
+                    .await?
+                    .ok_or_else(|| {
+                        HammurabiError::GitHub(format!(
+                            "PR reportedly exists for {} but could not be found",
+                            branch_name
+                        ))
+                    })
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
 pub async fn execute(
     ctx: &TransitionContext,
     issue: &TrackedIssue,
@@ -24,6 +62,9 @@ pub async fn execute(
             IssueState::AwaitPRApproval,
             Some(IssueState::Reviewing),
         )?;
+        // Clear stale review state so it doesn't leak into future transitions
+        ctx.db.update_issue_review_feedback(issue.id, None)?;
+        ctx.db.reset_review_count(issue.id)?;
         return Ok(());
     }
 
@@ -111,6 +152,18 @@ pub async fn execute(
     )
     .await;
 
+    // Always clean up worktree, regardless of AI result
+    let _ = tokio::fs::remove_file(worktree_path.join("CLAUDE.md")).await;
+    hooks::run_hook_best_effort(
+        "before_remove",
+        ctx.config.hooks.before_remove.as_deref(),
+        &worktree_path,
+        hook_timeout,
+    )
+    .await;
+    let _ = ctx.worktree.remove_worktree(&worktree_path).await;
+
+    // Now propagate AI errors after cleanup
     let result = ai_result?;
 
     tracing::info!(
@@ -136,19 +189,6 @@ pub async fn execute(
         &model,
     )?;
 
-    // Remove seeded CLAUDE.md
-    let _ = tokio::fs::remove_file(worktree_path.join("CLAUDE.md")).await;
-
-    // Clean up worktree
-    hooks::run_hook_best_effort(
-        "before_remove",
-        ctx.config.hooks.before_remove.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await;
-    let _ = ctx.worktree.remove_worktree(&worktree_path).await;
-
     // Parse verdict
     let passed = prompts::parse_review_verdict(&result.content);
 
@@ -165,10 +205,8 @@ pub async fn execute(
             "Fixes #{}\n\nImplementation for #{}\n\n---\n*Auto-reviewed and approved by Hammurabi*",
             issue.github_issue_number, issue.github_issue_number
         );
-        let pr_number = ctx
-            .github
-            .create_pull_request(&pr_title, &branch_name, &default_branch, &pr_body)
-            .await?;
+        let pr_number =
+            create_or_find_pr(ctx, &pr_title, &branch_name, &default_branch, &pr_body).await?;
 
         // Update DB
         ctx.db.update_issue_state(
@@ -211,10 +249,9 @@ pub async fn execute(
                 review_count,
                 findings.chars().take(2000).collect::<String>()
             );
-            let pr_number = ctx
-                .github
-                .create_pull_request(&pr_title, &branch_name, &default_branch, &pr_body)
-                .await?;
+            let pr_number =
+                create_or_find_pr(ctx, &pr_title, &branch_name, &default_branch, &pr_body)
+                    .await?;
 
             ctx.db.update_issue_state(
                 issue.id,
@@ -513,9 +550,15 @@ mod tests {
         db.update_issue_state(issue.id, IssueState::Reviewing, Some(IssueState::Implementing))
             .unwrap();
         db.update_issue_impl_pr(issue.id, 42).unwrap();
+        // Simulate stale review state from a previous FAIL cycle
+        db.increment_review_count(issue.id).unwrap();
+        db.update_issue_review_feedback(issue.id, Some("stale feedback"))
+            .unwrap();
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert_eq!(issue.state, IssueState::Reviewing);
         assert_eq!(issue.impl_pr_number, Some(42));
+        assert_eq!(issue.review_count, 1);
+        assert!(issue.review_feedback.is_some());
 
         let ai = Arc::new(MockAiAgent::new());
         // AI should NOT be invoked — no response configured intentionally
@@ -531,9 +574,11 @@ mod tests {
 
         execute(&ctx, &issue).await.unwrap();
 
-        // Should transition to AwaitPRApproval
+        // Should transition to AwaitPRApproval with stale review state cleared
         let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert_eq!(updated.state, IssueState::AwaitPRApproval);
+        assert_eq!(updated.review_count, 0);
+        assert!(updated.review_feedback.is_none());
 
         // No PR should be created (already exists)
         let prs = gh.created_prs.lock().unwrap();

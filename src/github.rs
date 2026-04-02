@@ -85,6 +85,10 @@ pub trait GitHubClient: Send + Sync {
         issue_number: u64,
         label: &str,
     ) -> Result<Option<String>, HammurabiError>;
+    async fn find_pull_request_by_head(
+        &self,
+        head: &str,
+    ) -> Result<Option<u64>, HammurabiError>;
 }
 
 pub struct OctocrabClient {
@@ -550,6 +554,43 @@ impl GitHubClient for OctocrabClient {
         })
         .await
     }
+
+    async fn find_pull_request_by_head(
+        &self,
+        head: &str,
+    ) -> Result<Option<u64>, HammurabiError> {
+        let owner = self.owner.clone();
+        let repo = self.repo.clone();
+        let client = self.client.clone();
+        let head = head.to_string();
+
+        self.retry(|| {
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let client = client.clone();
+            let head = head.clone();
+            async move {
+                let full_head = format!("{owner}:{head}");
+                let prs = client
+                    .pulls(&owner, &repo)
+                    .list()
+                    .head(full_head)
+                    .state(octocrab::params::State::Open)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "find PR by head {}: {}",
+                            head,
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
+
+                Ok(prs.items.first().map(|pr| pr.number))
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -758,6 +799,24 @@ pub mod mock {
             Ok(adders
                 .get(&(issue_number, label.to_string()))
                 .cloned())
+        }
+
+        async fn find_pull_request_by_head(
+            &self,
+            head: &str,
+        ) -> Result<Option<u64>, HammurabiError> {
+            let prs = self.created_prs.lock().unwrap();
+            let statuses = self.pr_statuses.lock().unwrap();
+            // Search created PRs for one matching the head branch that is still open
+            for (i, (_, pr_head, _, _)) in prs.iter().enumerate() {
+                if pr_head == head {
+                    let pr_number = (i + 1) as u64; // PR numbers start at 1
+                    if let Some(PrStatus::Open) = statuses.get(&pr_number) {
+                        return Ok(Some(pr_number));
+                    }
+                }
+            }
+            Ok(None)
         }
     }
 }

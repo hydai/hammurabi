@@ -362,6 +362,9 @@ pub fn load() -> Result<Config, HammurabiError> {
     let global_review = raw.review;
     let mut global_review_max_iterations = raw.review_max_iterations.unwrap_or(2);
     env_override("review_max_iterations", &mut global_review_max_iterations);
+    if global_review_max_iterations < 1 {
+        global_review_max_iterations = 1;
+    }
     let global_spec = raw.spec;
     let global_implement = raw.implement;
 
