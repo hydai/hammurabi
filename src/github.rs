@@ -604,7 +604,7 @@ pub mod mock {
         pub comments: Mutex<HashMap<u64, Vec<GitHubComment>>>,
         pub pr_statuses: Mutex<HashMap<u64, PrStatus>>,
         pub created_comments: Mutex<Vec<(u64, String)>>,
-        pub created_prs: Mutex<Vec<(String, String, String, String)>>,
+        pub created_prs: Mutex<Vec<(String, String, String, String, u64)>>,
         pub created_issues: Mutex<Vec<(String, String)>>,
         pub file_contents: Mutex<HashMap<(String, String), String>>,
         pub label_adders: Mutex<HashMap<(u64, String), String>>,
@@ -733,6 +733,7 @@ pub mod mock {
                 head.to_string(),
                 base.to_string(),
                 body.to_string(),
+                pr,
             ));
             self.pr_statuses
                 .lock()
@@ -807,16 +808,10 @@ pub mod mock {
         ) -> Result<Option<u64>, HammurabiError> {
             let prs = self.created_prs.lock().unwrap();
             let statuses = self.pr_statuses.lock().unwrap();
-            // PR numbers are assigned from next_pr_number (default 100) upward.
-            // Collect actual PR numbers in insertion order to match created_prs indices.
-            let mut pr_numbers: Vec<u64> = statuses.keys().cloned().collect();
-            pr_numbers.sort_unstable();
-            for (i, (_, pr_head, _, _)) in prs.iter().enumerate() {
+            for (_, pr_head, _, _, pr_number) in prs.iter() {
                 if pr_head == head {
-                    if let Some(&pr_number) = pr_numbers.get(i) {
-                        if let Some(PrStatus::Open) = statuses.get(&pr_number) {
-                            return Ok(Some(pr_number));
-                        }
+                    if let Some(PrStatus::Open) = statuses.get(pr_number) {
+                        return Ok(Some(*pr_number));
                     }
                 }
             }

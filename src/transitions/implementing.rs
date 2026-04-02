@@ -179,11 +179,6 @@ pub async fn execute(
     let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
     ctx.worktree.push_branch(&branch_name).await?;
 
-    // Clear persisted review feedback now that it has been consumed
-    if feedback.is_some() {
-        ctx.db.update_issue_review_feedback(issue.id, None)?;
-    }
-
     if has_pr {
         // PR already exists (human PR feedback revision) — go back to AwaitPRApproval
         ctx.db.update_issue_state(
@@ -230,6 +225,12 @@ pub async fn execute(
             revision = is_revision,
             "Implementation complete, transitioning to review"
         );
+    }
+
+    // Clear persisted review feedback after state transition has been committed,
+    // so a crash before this point still retains the feedback for the next poll.
+    if feedback.is_some() {
+        ctx.db.update_issue_review_feedback(issue.id, None)?;
     }
 
     Ok(())

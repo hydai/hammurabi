@@ -198,7 +198,7 @@ pub async fn execute(
             "Review PASSED — creating PR"
         );
 
-        // Push branch and create PR
+        // Create (or find) PR for the implementation branch (already pushed by implementing transition)
         let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
         let pr_title = gh_issue.title.clone();
         let pr_body = format!(
@@ -238,7 +238,7 @@ pub async fn execute(
                 "Review FAILED — max iterations reached, creating PR anyway"
             );
 
-            // Push branch and create PR with review findings
+            // Create (or find) PR with review findings (branch already pushed by implementing transition)
             let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
             let findings = prompts::extract_blocking_findings(&result.content);
             let pr_title = gh_issue.title.clone();
