@@ -635,17 +635,17 @@ Your review MUST follow this exact format:
 /// Defaults to PASS (optimistic) if the verdict cannot be parsed.
 pub fn parse_review_verdict(ai_output: &str) -> bool {
     /// Check if a line is an ambiguous template placeholder (contains both PASS and FAIL,
-    /// or is a bracket-wrapped template choice like `[PASS | FAIL]`).
+    /// or is a bracket-wrapped template choice like `[PASS: ... | FAIL: ...]`).
     fn is_template_line(upper: &str) -> bool {
         // Lines containing both PASS and FAIL are template placeholders
         if upper.contains("PASS") && upper.contains("FAIL") {
             return true;
         }
-        // Only treat bracket-wrapped lines as templates when brackets wrap the whole
-        // line (e.g. "[PASS: ...]") or contain choice syntax "|" — avoids ignoring
-        // legitimate verdicts like "PASS: all good [details]"
+        // Bracket-wrapped lines are only templates if they contain choice syntax "|"
+        // (e.g. "[PASS | FAIL]"). Unambiguous bracketed verdicts like "[FAIL: Missing coverage]"
+        // should be parsed as real verdicts by stripping outer brackets.
         let trimmed = upper.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') && (trimmed.contains("PASS") || trimmed.contains("FAIL")) {
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.contains('|') {
             return true;
         }
         false
@@ -665,12 +665,20 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
         if is_template_line(&upper) {
             return None;
         }
+        // Strip outer brackets so "[FAIL: Missing coverage]" is parsed as "FAIL: Missing coverage"
+        let upper = upper.trim();
+        let upper = if upper.starts_with('[') && upper.ends_with(']') {
+            &upper[1..upper.len() - 1]
+        } else {
+            upper
+        };
+        let upper = upper.trim();
         // Accept PASS/FAIL only as leading tokens with a boundary after them
         // (e.g. "PASS: Ready" or "FAIL -- 2 blocking", but not "PASSWORD" or "PASSING")
-        if upper.starts_with("PASS") && has_token_boundary(&upper, 4) {
+        if upper.starts_with("PASS") && has_token_boundary(upper, 4) {
             return Some(true);
         }
-        if upper.starts_with("FAIL") && has_token_boundary(&upper, 4) {
+        if upper.starts_with("FAIL") && has_token_boundary(upper, 4) {
             return Some(false);
         }
         // Also accept lines with clear verdict keywords
@@ -924,9 +932,16 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_review_verdict_template_with_brackets_defaults_pass() {
-        // Bracket-wrapped FAIL should be treated as template, not real failure
+    fn test_parse_review_verdict_bracketed_fail_detected() {
+        // Unambiguous bracket-wrapped FAIL (no choice syntax) should be parsed as real FAIL
         let output = "## Verdict\n[FAIL: 0 blocking issues must be addressed]";
+        assert!(!parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_bracketed_pass_detected() {
+        // Unambiguous bracket-wrapped PASS should be parsed as real PASS
+        let output = "## Verdict\n[PASS: Ready for human review]";
         assert!(parse_review_verdict(output));
     }
 
