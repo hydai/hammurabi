@@ -511,4 +511,60 @@ mod tests {
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
+
+    #[tokio::test]
+    async fn test_review_idempotency_guard_transitions_to_await_pr_approval() {
+        // If an issue is in Reviewing but already has a PR, the idempotency guard
+        // should transition to AwaitPRApproval without invoking AI or creating a PR.
+        let gh = Arc::new(MockGitHubClient::new());
+        let db = Arc::new(Database::open(":memory:").unwrap());
+
+        // Set up issue in Reviewing state with an existing PR
+        gh.add_issue(GitHubIssue {
+            number: 1,
+            title: "Add feature X".to_string(),
+            body: "We need feature X".to_string(),
+            labels: vec!["hammurabi".to_string()],
+            state: "Open".to_string(),
+            user_login: "alice".to_string(),
+        });
+        db.insert_issue("owner/repo", 1, "Add feature X").unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        db.update_issue_state(issue.id, IssueState::Reviewing, Some(IssueState::Implementing))
+            .unwrap();
+        db.update_issue_impl_pr(issue.id, 42).unwrap();
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert_eq!(issue.state, IssueState::Reviewing);
+        assert_eq!(issue.impl_pr_number, Some(42));
+
+        let ai = Arc::new(MockAiAgent::new());
+        // AI should NOT be invoked — no response configured intentionally
+        let tmp = std::env::temp_dir().join("hammurabi-test-review-idempotent");
+        let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
+        let ctx = TransitionContext {
+            github: gh.clone(),
+            ai: ai.clone(),
+            worktree: wt.clone(),
+            db: db.clone(),
+            config: Arc::new(test_config()),
+        };
+
+        execute(&ctx, &issue).await.unwrap();
+
+        // Should transition to AwaitPRApproval
+        let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert_eq!(updated.state, IssueState::AwaitPRApproval);
+
+        // No PR should be created (already exists)
+        let prs = gh.created_prs.lock().unwrap();
+        assert_eq!(prs.len(), 0);
+
+        // No worktree should be created (AI was never invoked)
+        let wts = wt.created_worktrees.lock().unwrap();
+        assert_eq!(wts.len(), 0);
+
+        // No comments posted
+        let comments = gh.created_comments.lock().unwrap();
+        assert_eq!(comments.len(), 0);
+    }
 }
