@@ -240,8 +240,10 @@ pub async fn execute(
                 "Review FAILED — sending back for revision"
             );
 
-            // Extract findings and send back to implementation
+            // Extract findings and persist them before state change (crash-safe)
             let findings = prompts::extract_blocking_findings(&result.content);
+            ctx.db
+                .update_issue_review_feedback(issue.id, Some(&findings))?;
 
             ctx.db.update_issue_state(
                 issue.id,
@@ -260,18 +262,6 @@ pub async fn execute(
                     ),
                 )
                 .await?;
-
-            // Re-run implementation with review findings as feedback
-            let updated = ctx
-                .db
-                .get_issue(&ctx.config.repo, issue.github_issue_number)?
-                .ok_or_else(|| {
-                    HammurabiError::Database(format!(
-                        "issue {} not found after state update",
-                        issue.github_issue_number
-                    ))
-                })?;
-            super::implementing::execute(ctx, &updated, Some(&findings)).await?;
         }
     }
 
@@ -388,25 +378,12 @@ mod tests {
         let issue = setup_issue(&gh, &db);
 
         let ai = Arc::new(MockAiAgent::new());
-        // First call: review FAIL; second call: implementation (from re-execution)
-        ai.set_response(
-            "Reviewer agent",
-            AiResult {
-                content: "## Review Summary\nFAIL -- 1 blocking issue\n\n### BLOCKING: Missing tests\n**File**: src/foo.rs\n**Issue**: No tests\n\n## Verdict\nFAIL: 1 blocking issues must be addressed".to_string(),
-                session_id: Some("sess-review-fail".to_string()),
-                input_tokens: 200,
-                output_tokens: 100,
-            },
-        );
-        ai.set_response(
-            "Developer agent",
-            AiResult {
-                content: "Implementation revised".to_string(),
-                session_id: Some("sess-impl".to_string()),
-                input_tokens: 300,
-                output_tokens: 200,
-            },
-        );
+        ai.set_default_response(AiResult {
+            content: "## Review Summary\nFAIL -- 1 blocking issue\n\n### BLOCKING: Missing tests\n**File**: src/foo.rs\n**Issue**: No tests\n\n## Verdict\nFAIL: 1 blocking issues must be addressed".to_string(),
+            session_id: Some("sess-review-fail".to_string()),
+            input_tokens: 200,
+            output_tokens: 100,
+        });
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
@@ -419,10 +396,13 @@ mod tests {
 
         execute(&ctx, &issue).await.unwrap();
 
-        // After review fail + re-implementation, state should be Reviewing again
-        // (implementing.execute sends to Reviewing for first-run)
+        // After review fail, state should be Implementing (no inline re-execution)
         let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert_eq!(updated.state, IssueState::Implementing);
         assert_eq!(updated.review_count, 1);
+        // Review feedback should be persisted for the poller to pick up
+        assert!(updated.review_feedback.is_some());
+        assert!(updated.review_feedback.as_ref().unwrap().contains("Missing tests"));
 
         let comments = gh.created_comments.lock().unwrap();
         assert!(comments.iter().any(|(_, body)| body.contains("Auto-review found issues")));
@@ -439,9 +419,9 @@ mod tests {
         let db = Arc::new(Database::open(":memory:").unwrap());
         let issue = setup_issue(&gh, &db);
 
-        // Pre-set review_count to max-1 so next increment hits the cap
+        // Configure max iterations to 1 so the first FAIL immediately hits the cap
         let mut config = test_config();
-        config.review_max_iterations = 1; // will be exceeded after first FAIL
+        config.review_max_iterations = 1; // first FAIL brings review_count from 0 to 1, hitting the cap
 
         let ai = Arc::new(MockAiAgent::new());
         ai.set_default_response(AiResult {

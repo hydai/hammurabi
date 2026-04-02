@@ -497,8 +497,8 @@ Complete every step in order. Do not skip any step.
 - Note the expected test coverage
 
 ### Step 2: Review the Implementation
-- Run `git log --oneline {base_branch}..HEAD` to see what commits were made
-- Run `git diff {base_branch}..HEAD --stat` to see which files changed
+- Run `git log --oneline origin/{base_branch}..HEAD` to see what commits were made
+- Run `git diff origin/{base_branch}..HEAD --stat` to see which files changed
 - For each file changed, read the full file (not just the diff) to understand context
 - Compare each change against the corresponding spec requirement
 

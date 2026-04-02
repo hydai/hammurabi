@@ -98,6 +98,7 @@ pub struct TrackedIssue {
     pub worktree_path: Option<String>,
     pub retry_count: u32,
     pub review_count: u32,
+    pub review_feedback: Option<String>,
     pub bypass: bool,
     pub created_at: String,
     pub updated_at: String,

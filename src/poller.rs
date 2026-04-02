@@ -614,7 +614,8 @@ async fn process_issue(
             }
         }
         IssueState::Implementing => {
-            transitions::implementing::execute(ctx, issue, None).await?;
+            let feedback = issue.review_feedback.as_deref();
+            transitions::implementing::execute(ctx, issue, feedback).await?;
         }
         IssueState::Reviewing => {
             transitions::reviewing::execute(ctx, issue).await?;
