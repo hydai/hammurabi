@@ -635,14 +635,17 @@ Your review MUST follow this exact format:
 /// Defaults to PASS (optimistic) if the verdict cannot be parsed.
 pub fn parse_review_verdict(ai_output: &str) -> bool {
     /// Check if a line is an ambiguous template placeholder (contains both PASS and FAIL,
-    /// or is wrapped in brackets indicating a template choice like `[PASS | FAIL]`).
+    /// or is a bracket-wrapped template choice like `[PASS | FAIL]`).
     fn is_template_line(upper: &str) -> bool {
         // Lines containing both PASS and FAIL are template placeholders
         if upper.contains("PASS") && upper.contains("FAIL") {
             return true;
         }
-        // Lines like "[PASS: ... ]" or "[FAIL: ... ]" with surrounding brackets
-        if upper.contains('[') && upper.contains(']') && (upper.contains("PASS") || upper.contains("FAIL")) {
+        // Only treat bracket-wrapped lines as templates when brackets wrap the whole
+        // line (e.g. "[PASS: ...]") or contain choice syntax "|" — avoids ignoring
+        // legitimate verdicts like "PASS: all good [details]"
+        let trimmed = upper.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && (trimmed.contains("PASS") || trimmed.contains("FAIL")) {
             return true;
         }
         false
@@ -944,10 +947,9 @@ mod tests {
 
     #[test]
     fn test_parse_review_verdict_no_false_positive_failure() {
-        // "FAILURE" at the start should still match FAIL (has boundary after 4th char: 'U' wait no...)
-        // Actually "FAILURE" starts with "FAIL" but 'U' is alphanumeric — no boundary
+        // "FAILURE" should NOT match FAIL as a verdict token (no boundary after "FAIL")
+        // FAILURE is skipped due to missing token boundary; later PASS verdict should be used instead
         let output = "## Verdict\nFAILURE mode not applicable\nPASS: All good";
-        // FAILURE skipped (no boundary), PASS matches
         assert!(parse_review_verdict(output));
     }
 
