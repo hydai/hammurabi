@@ -216,9 +216,18 @@ pub async fn execute(
         } else {
             "Implementation complete. Running auto-review..."
         };
-        ctx.github
+        // Best-effort: DB state is already committed to Reviewing
+        if let Err(e) = ctx
+            .github
             .post_issue_comment(issue.github_issue_number, comment_msg)
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                issue = issue.github_issue_number,
+                error = %e,
+                "Failed to post implementation-complete comment"
+            );
+        }
 
         tracing::info!(
             issue = issue.github_issue_number,

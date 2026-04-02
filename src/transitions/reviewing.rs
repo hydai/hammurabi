@@ -216,15 +216,16 @@ pub async fn execute(
         let pr_number =
             create_or_find_pr(ctx, &pr_title, &branch_name, &default_branch, &pr_body).await?;
 
-        // Update DB
+        // Persist PR number before state transition so a crash between the two
+        // doesn't leave the issue in AwaitPRApproval without a PR number.
+        ctx.db.update_issue_impl_pr(issue.id, pr_number)?;
+        ctx.db.reset_review_count(issue.id)?;
+        ctx.db.update_issue_review_feedback(issue.id, None)?;
         ctx.db.update_issue_state(
             issue.id,
             IssueState::AwaitPRApproval,
             Some(IssueState::Reviewing),
         )?;
-        ctx.db.update_issue_impl_pr(issue.id, pr_number)?;
-        ctx.db.reset_review_count(issue.id)?;
-        ctx.db.update_issue_review_feedback(issue.id, None)?;
 
         // Best-effort comment: DB state is already committed, don't fail the
         // transition if commenting fails.
@@ -272,14 +273,14 @@ pub async fn execute(
                 create_or_find_pr(ctx, &pr_title, &branch_name, &default_branch, &pr_body)
                     .await?;
 
+            ctx.db.update_issue_impl_pr(issue.id, pr_number)?;
+            ctx.db.update_issue_review_feedback(issue.id, None)?;
+            ctx.db.reset_review_count(issue.id)?;
             ctx.db.update_issue_state(
                 issue.id,
                 IssueState::AwaitPRApproval,
                 Some(IssueState::Reviewing),
             )?;
-            ctx.db.update_issue_impl_pr(issue.id, pr_number)?;
-            ctx.db.update_issue_review_feedback(issue.id, None)?;
-            ctx.db.reset_review_count(issue.id)?;
 
             // Best-effort comment: DB state is already committed
             if let Err(e) = ctx
