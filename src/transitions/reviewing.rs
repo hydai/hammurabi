@@ -29,8 +29,8 @@ async fn create_or_find_pr(
                 error = %err,
                 "Failed to create PR; attempting to find existing PR by head branch"
             );
-            match ctx.github.find_pull_request_by_head(branch_name).await? {
-                Some(pr_number) => {
+            match ctx.github.find_pull_request_by_head(branch_name).await {
+                Ok(Some(pr_number)) => {
                     tracing::info!(
                         branch = %branch_name,
                         pr = pr_number,
@@ -38,7 +38,15 @@ async fn create_or_find_pr(
                     );
                     Ok(pr_number)
                 }
-                None => Err(err),
+                Ok(None) => Err(err),
+                Err(lookup_err) => {
+                    tracing::warn!(
+                        branch = %branch_name,
+                        lookup_error = %lookup_err,
+                        "PR lookup also failed; returning original creation error"
+                    );
+                    Err(err)
+                }
             }
         }
     }
@@ -216,8 +224,12 @@ pub async fn execute(
         )?;
         ctx.db.update_issue_impl_pr(issue.id, pr_number)?;
         ctx.db.reset_review_count(issue.id)?;
+        ctx.db.update_issue_review_feedback(issue.id, None)?;
 
-        ctx.github
+        // Best-effort comment: DB state is already committed, don't fail the
+        // transition if commenting fails.
+        if let Err(e) = ctx
+            .github
             .post_issue_comment(
                 issue.github_issue_number,
                 &format!(
@@ -225,7 +237,14 @@ pub async fn execute(
                     pr_number
                 ),
             )
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                issue = issue.github_issue_number,
+                error = %e,
+                "Failed to post review-passed comment"
+            );
+        }
     } else {
         let review_count = ctx.db.increment_review_count(issue.id)?;
         let max_iterations = ctx.config.review_max_iterations;
@@ -259,8 +278,11 @@ pub async fn execute(
                 Some(IssueState::Reviewing),
             )?;
             ctx.db.update_issue_impl_pr(issue.id, pr_number)?;
+            ctx.db.update_issue_review_feedback(issue.id, None)?;
 
-            ctx.github
+            // Best-effort comment: DB state is already committed
+            if let Err(e) = ctx
+                .github
                 .post_issue_comment(
                     issue.github_issue_number,
                     &format!(
@@ -268,7 +290,14 @@ pub async fn execute(
                         review_count, pr_number
                     ),
                 )
-                .await?;
+                .await
+            {
+                tracing::warn!(
+                    issue = issue.github_issue_number,
+                    error = %e,
+                    "Failed to post max-iterations comment"
+                );
+            }
         } else {
             tracing::info!(
                 issue = issue.github_issue_number,
@@ -288,7 +317,9 @@ pub async fn execute(
                 Some(IssueState::Reviewing),
             )?;
 
-            ctx.github
+            // Best-effort comment: DB state is already committed
+            if let Err(e) = ctx
+                .github
                 .post_issue_comment(
                     issue.github_issue_number,
                     &format!(
@@ -298,7 +329,14 @@ pub async fn execute(
                         findings.chars().take(1000).collect::<String>()
                     ),
                 )
-                .await?;
+                .await
+            {
+                tracing::warn!(
+                    issue = issue.github_issue_number,
+                    error = %e,
+                    "Failed to post review-fail comment"
+                );
+            }
         }
     }
 

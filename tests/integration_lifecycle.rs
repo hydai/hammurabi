@@ -154,7 +154,7 @@ async fn test_full_lifecycle() {
     )
     .unwrap();
 
-    // Phase 4: Implementation — creates single PR
+    // Phase 4: Implementation — transitions to Reviewing (PR created during review)
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     transitions::implementing::execute(&ctx, &issue, None)
         .await
