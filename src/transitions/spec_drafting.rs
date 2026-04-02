@@ -193,6 +193,8 @@ mod tests {
             hooks: crate::config::HooksConfig::default(),
             approvers: vec!["alice".to_string()],
             bypass_label: None,
+            review: None,
+            review_max_iterations: 2,
             spec: None,
             implement: None,
         }

@@ -616,6 +616,9 @@ async fn process_issue(
         IssueState::Implementing => {
             transitions::implementing::execute(ctx, issue, None).await?;
         }
+        IssueState::Reviewing => {
+            transitions::reviewing::execute(ctx, issue).await?;
+        }
         IssueState::AwaitPRApproval => {
             // First check if PR was merged or closed
             transitions::completion::check(ctx, issue).await?;
@@ -730,7 +733,8 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
             // Active states: will re-execute on next poll cycle (idempotent)
             IssueState::Discovered
             | IssueState::SpecDrafting
-            | IssueState::Implementing => {
+            | IssueState::Implementing
+            | IssueState::Reviewing => {
                 tracing::info!(
                     repo = %repo,
                     issue = issue.github_issue_number,
