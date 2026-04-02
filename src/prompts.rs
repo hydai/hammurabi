@@ -648,6 +648,13 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
         false
     }
 
+    /// Check if the character after a keyword match is a valid token boundary
+    /// (not a letter/digit, meaning PASS/FAIL is a standalone token).
+    fn has_token_boundary(text: &str, keyword_len: usize) -> bool {
+        text.len() == keyword_len
+            || !text.as_bytes()[keyword_len].is_ascii_alphanumeric()
+    }
+
     /// Extract an unambiguous verdict from a line. Returns Some(true) for PASS,
     /// Some(false) for FAIL, or None if the line is ambiguous/template/irrelevant.
     fn parse_verdict_line(trimmed: &str) -> Option<bool> {
@@ -655,11 +662,12 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
         if is_template_line(&upper) {
             return None;
         }
-        // Accept PASS/FAIL only as leading tokens (e.g. "PASS: Ready" or "FAIL: 2 blocking")
-        if upper.starts_with("PASS") {
+        // Accept PASS/FAIL only as leading tokens with a boundary after them
+        // (e.g. "PASS: Ready" or "FAIL -- 2 blocking", but not "PASSWORD" or "PASSING")
+        if upper.starts_with("PASS") && has_token_boundary(&upper, 4) {
             return Some(true);
         }
-        if upper.starts_with("FAIL") {
+        if upper.starts_with("FAIL") && has_token_boundary(&upper, 4) {
             return Some(false);
         }
         // Also accept lines with clear verdict keywords
@@ -916,6 +924,30 @@ mod tests {
     fn test_parse_review_verdict_template_with_brackets_defaults_pass() {
         // Bracket-wrapped FAIL should be treated as template, not real failure
         let output = "## Verdict\n[FAIL: 0 blocking issues must be addressed]";
+        assert!(parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_no_false_positive_password() {
+        // "PASSWORD" should not match as "PASS" — requires token boundary
+        let output = "## Verdict\nPASSWORD reset required for deployment";
+        // No valid verdict token, defaults to PASS
+        assert!(parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_no_false_positive_passing() {
+        // "PASSING" should not match as "PASS"
+        let output = "## Review Summary\nPASSING tests found but more needed\n\n## Verdict\nFAIL: Missing coverage";
+        assert!(!parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_no_false_positive_failure() {
+        // "FAILURE" at the start should still match FAIL (has boundary after 4th char: 'U' wait no...)
+        // Actually "FAILURE" starts with "FAIL" but 'U' is alphanumeric — no boundary
+        let output = "## Verdict\nFAILURE mode not applicable\nPASS: All good";
+        // FAILURE skipped (no boundary), PASS matches
         assert!(parse_review_verdict(output));
     }
 

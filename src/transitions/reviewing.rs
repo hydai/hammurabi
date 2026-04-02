@@ -10,13 +10,20 @@ pub async fn execute(
     ctx: &TransitionContext,
     issue: &TrackedIssue,
 ) -> Result<(), HammurabiError> {
-    // Idempotency guard: if a PR already exists for this issue, skip review
+    // Idempotency guard: if a PR already exists for this issue, transition to
+    // AwaitPRApproval instead of re-running review (prevents duplicate PRs and
+    // avoids the issue getting stuck in Reviewing state on every poller cycle).
     if issue.impl_pr_number.is_some() {
-        tracing::debug!(
+        tracing::info!(
             issue = issue.github_issue_number,
             pr = issue.impl_pr_number,
-            "PR already exists, skipping review to avoid duplicates"
+            "PR already exists, transitioning to AwaitPRApproval to avoid duplicate review"
         );
+        ctx.db.update_issue_state(
+            issue.id,
+            IssueState::AwaitPRApproval,
+            Some(IssueState::Reviewing),
+        )?;
         return Ok(());
     }
 
