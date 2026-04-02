@@ -7,6 +7,7 @@ pub enum IssueState {
     SpecDrafting,
     AwaitSpecApproval,
     Implementing,
+    Reviewing,
     AwaitPRApproval,
     Done,
     Failed,
@@ -16,7 +17,10 @@ impl IssueState {
     pub fn is_active(&self) -> bool {
         matches!(
             self,
-            IssueState::Discovered | IssueState::SpecDrafting | IssueState::Implementing
+            IssueState::Discovered
+                | IssueState::SpecDrafting
+                | IssueState::Implementing
+                | IssueState::Reviewing
         )
     }
 
@@ -34,7 +38,10 @@ impl IssueState {
     pub fn sort_priority(&self) -> u8 {
         match self {
             IssueState::Failed => 0,
-            IssueState::Discovered | IssueState::SpecDrafting | IssueState::Implementing => 1,
+            IssueState::Discovered
+            | IssueState::SpecDrafting
+            | IssueState::Implementing
+            | IssueState::Reviewing => 1,
             IssueState::AwaitSpecApproval | IssueState::AwaitPRApproval => 2,
             IssueState::Done => 3,
         }
@@ -48,6 +55,7 @@ impl fmt::Display for IssueState {
             IssueState::SpecDrafting => write!(f, "SpecDrafting"),
             IssueState::AwaitSpecApproval => write!(f, "AwaitSpecApproval"),
             IssueState::Implementing => write!(f, "Implementing"),
+            IssueState::Reviewing => write!(f, "Reviewing"),
             IssueState::AwaitPRApproval => write!(f, "AwaitPRApproval"),
             IssueState::Done => write!(f, "Done"),
             IssueState::Failed => write!(f, "Failed"),
@@ -64,6 +72,7 @@ impl FromStr for IssueState {
             "SpecDrafting" => Ok(IssueState::SpecDrafting),
             "AwaitSpecApproval" => Ok(IssueState::AwaitSpecApproval),
             "Implementing" => Ok(IssueState::Implementing),
+            "Reviewing" => Ok(IssueState::Reviewing),
             "AwaitPRApproval" => Ok(IssueState::AwaitPRApproval),
             "Done" => Ok(IssueState::Done),
             "Failed" => Ok(IssueState::Failed),
@@ -88,6 +97,7 @@ pub struct TrackedIssue {
     pub error_message: Option<String>,
     pub worktree_path: Option<String>,
     pub retry_count: u32,
+    pub review_count: u32,
     pub bypass: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -116,6 +126,7 @@ mod tests {
             IssueState::SpecDrafting,
             IssueState::AwaitSpecApproval,
             IssueState::Implementing,
+            IssueState::Reviewing,
             IssueState::AwaitPRApproval,
             IssueState::Done,
             IssueState::Failed,
@@ -132,6 +143,7 @@ mod tests {
         assert!(IssueState::Discovered.is_active());
         assert!(IssueState::SpecDrafting.is_active());
         assert!(IssueState::Implementing.is_active());
+        assert!(IssueState::Reviewing.is_active());
         assert!(!IssueState::AwaitSpecApproval.is_active());
         assert!(!IssueState::Done.is_active());
 

@@ -176,6 +176,16 @@ impl Database {
             );
         }
 
+        // Add review_count column if missing (incremental migration)
+        let has_review_count = conn
+            .prepare("SELECT review_count FROM issues LIMIT 0")
+            .is_ok();
+        if !has_review_count {
+            let _ = conn.execute_batch(
+                "ALTER TABLE issues ADD COLUMN review_count INTEGER NOT NULL DEFAULT 0;",
+            );
+        }
+
         // Create tables if they don't exist (fresh install or post-migration)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS issues (
@@ -193,6 +203,7 @@ impl Database {
                 error_message TEXT,
                 worktree_path TEXT,
                 retry_count INTEGER NOT NULL DEFAULT 0,
+                review_count INTEGER NOT NULL DEFAULT 0,
                 bypass INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -255,8 +266,8 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, bypass,
-                        created_at, updated_at
+                        previous_state, error_message, worktree_path, retry_count, review_count,
+                        bypass, created_at, updated_at
                  FROM issues WHERE repo = ?1 AND github_issue_number = ?2",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -284,8 +295,8 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, bypass,
-                        created_at, updated_at
+                        previous_state, error_message, worktree_path, retry_count, review_count,
+                        bypass, created_at, updated_at
                  FROM issues WHERE github_issue_number = ?1",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -307,8 +318,8 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, bypass,
-                        created_at, updated_at
+                        previous_state, error_message, worktree_path, retry_count, review_count,
+                        bypass, created_at, updated_at
                  FROM issues",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -331,8 +342,8 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, bypass,
-                        created_at, updated_at
+                        previous_state, error_message, worktree_path, retry_count, review_count,
+                        bypass, created_at, updated_at
                  FROM issues WHERE repo = ?1",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -355,8 +366,8 @@ impl Database {
             .prepare(
                 "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
                         spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, bypass,
-                        created_at, updated_at
+                        previous_state, error_message, worktree_path, retry_count, review_count,
+                        bypass, created_at, updated_at
                  FROM issues WHERE state = ?1",
             )
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
@@ -503,6 +514,34 @@ impl Database {
         Ok(())
     }
 
+    pub fn increment_review_count(&self, id: i64) -> Result<u32, HammurabiError> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE issues SET review_count = review_count + 1, updated_at = datetime('now') WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| HammurabiError::Database(e.to_string()))?;
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT review_count FROM issues WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        Ok(count as u32)
+    }
+
+    pub fn reset_review_count(&self, id: i64) -> Result<(), HammurabiError> {
+        self.conn()
+            .execute(
+                "UPDATE issues SET review_count = 0, updated_at = datetime('now') WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn set_issue_bypass(&self, id: i64, bypass: bool) -> Result<(), HammurabiError> {
         self.conn()
             .execute(
@@ -608,9 +647,10 @@ fn row_to_tracked_issue(row: &rusqlite::Row) -> TrackedIssue {
         error_message: row.get(11).unwrap(),
         worktree_path: row.get(12).unwrap(),
         retry_count: row.get::<_, i64>(13).unwrap_or(0) as u32,
-        bypass: row.get::<_, i64>(14).unwrap_or(0) != 0,
-        created_at: row.get(15).unwrap(),
-        updated_at: row.get(16).unwrap(),
+        review_count: row.get::<_, i64>(14).unwrap_or(0) as u32,
+        bypass: row.get::<_, i64>(15).unwrap_or(0) != 0,
+        created_at: row.get(16).unwrap(),
+        updated_at: row.get(17).unwrap(),
     }
 }
 
