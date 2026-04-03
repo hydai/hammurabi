@@ -91,6 +91,13 @@ pub trait GitHubClient: Send + Sync {
     ) -> Result<Option<u64>, HammurabiError>;
 }
 
+#[derive(Clone)]
+struct RetryCtx {
+    client: octocrab::Octocrab,
+    owner: String,
+    repo: String,
+}
+
 pub struct OctocrabClient {
     client: octocrab::Octocrab,
     owner: String,
@@ -176,21 +183,25 @@ impl OctocrabClient {
         }
         Err(last_err.unwrap())
     }
+
+    fn retry_ctx(&self) -> RetryCtx {
+        RetryCtx {
+            client: self.client.clone(),
+            owner: self.owner.clone(),
+            repo: self.repo.clone(),
+        }
+    }
 }
 
 #[async_trait]
 impl GitHubClient for OctocrabClient {
     async fn list_labeled_issues(&self, label: &str) -> Result<Vec<GitHubIssue>, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
+        let ctx = self.retry_ctx();
         let label = label.to_string();
-        let client = self.client.clone();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             let label = label.clone();
-            let client = client.clone();
             async move {
                 let page = client
                     .issues(&owner, &repo)
@@ -221,14 +232,10 @@ impl GitHubClient for OctocrabClient {
     }
 
     async fn get_issue(&self, number: u64) -> Result<GitHubIssue, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             async move {
                 let issue = client
                     .issues(&owner, &repo)
@@ -254,14 +261,10 @@ impl GitHubClient for OctocrabClient {
         number: u64,
         since_id: Option<u64>,
     ) -> Result<Vec<GitHubComment>, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             async move {
                 let page = client
                     .issues(&owner, &repo)
@@ -301,15 +304,11 @@ impl GitHubClient for OctocrabClient {
         number: u64,
         body: &str,
     ) -> Result<u64, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
         let body = body.to_string();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             let body = body.clone();
             async move {
                 let comment = client
@@ -333,18 +332,14 @@ impl GitHubClient for OctocrabClient {
         base: &str,
         body: &str,
     ) -> Result<u64, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
         let title = title.to_string();
         let head = head.to_string();
         let base = base.to_string();
         let body = body.to_string();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             let title = title.clone();
             let head = head.clone();
             let base = base.clone();
@@ -365,14 +360,10 @@ impl GitHubClient for OctocrabClient {
     }
 
     async fn get_pr_status(&self, pr_number: u64) -> Result<PrStatus, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             async move {
                 let pr = client
                     .pulls(&owner, &repo)
@@ -400,17 +391,13 @@ impl GitHubClient for OctocrabClient {
         body: &str,
         labels: &[String],
     ) -> Result<u64, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
         let title = title.to_string();
         let body = body.to_string();
         let labels: Vec<String> = labels.to_vec();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             let title = title.clone();
             let body = body.clone();
             let labels = labels.clone();
@@ -431,14 +418,10 @@ impl GitHubClient for OctocrabClient {
     }
 
     async fn get_default_branch(&self) -> Result<String, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             async move {
                 let repo_info = client
                     .repos(&owner, &repo)
@@ -459,16 +442,12 @@ impl GitHubClient for OctocrabClient {
         branch: &str,
         path: &str,
     ) -> Result<String, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
         let branch = branch.to_string();
         let path = path.to_string();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             let branch = branch.clone();
             let path = path.clone();
             async move {
@@ -509,15 +488,11 @@ impl GitHubClient for OctocrabClient {
         issue_number: u64,
         label: &str,
     ) -> Result<Option<String>, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
         let label = label.to_string();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             let label = label.clone();
             async move {
                 let route = format!("/repos/{owner}/{repo}/issues/{issue_number}/events");
@@ -559,15 +534,11 @@ impl GitHubClient for OctocrabClient {
         &self,
         head: &str,
     ) -> Result<Option<u64>, HammurabiError> {
-        let owner = self.owner.clone();
-        let repo = self.repo.clone();
-        let client = self.client.clone();
+        let ctx = self.retry_ctx();
         let head = head.to_string();
 
         self.retry(|| {
-            let owner = owner.clone();
-            let repo = repo.clone();
-            let client = client.clone();
+            let RetryCtx { client, owner, repo } = ctx.clone();
             let head = head.clone();
             async move {
                 let full_head = format!("{owner}:{head}");
