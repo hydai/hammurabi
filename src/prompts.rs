@@ -631,9 +631,21 @@ Your review MUST follow this exact format:
     )
 }
 
-/// Parse a review verdict from AI output. Returns true for PASS, false for FAIL.
-/// Defaults to PASS (optimistic) if the verdict cannot be parsed.
-pub fn parse_review_verdict(ai_output: &str) -> bool {
+/// Result of parsing an AI review verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewVerdict {
+    Pass,
+    Fail,
+    /// The verdict could not be confidently extracted from the AI output.
+    Unknown,
+}
+
+/// Parse a review verdict from AI output.
+///
+/// Returns `Pass` or `Fail` when the verdict can be confidently extracted.
+/// Returns `Unknown` for ambiguous, template, or otherwise unparseable output
+/// so callers can decide how to handle the uncertain case.
+pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
     /// Check if a line is an ambiguous template placeholder (contains both PASS and FAIL,
     /// or is a bracket-wrapped template choice like `[PASS: ... | FAIL: ...]`).
     fn is_template_line(upper: &str) -> bool {
@@ -673,9 +685,9 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
         false
     }
 
-    /// Extract an unambiguous verdict from a line. Returns Some(true) for PASS,
-    /// Some(false) for FAIL, or None if the line is ambiguous/template/irrelevant.
-    fn parse_verdict_line(trimmed: &str) -> Option<bool> {
+    /// Extract an unambiguous verdict from a line. Returns Some(ReviewVerdict)
+    /// or None if the line is ambiguous/template/irrelevant.
+    fn parse_verdict_line(trimmed: &str) -> Option<ReviewVerdict> {
         let upper = trimmed.to_uppercase();
         if is_template_line(&upper) {
             return None;
@@ -691,22 +703,22 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
         // Accept PASS/FAIL only as leading tokens with a boundary after them
         // (e.g. "PASS: Ready" or "FAIL -- 2 blocking", but not "PASSWORD" or "PASSING")
         if upper.starts_with("PASS") && has_token_boundary(upper, 4) {
-            return Some(true);
+            return Some(ReviewVerdict::Pass);
         }
         if upper.starts_with("FAIL") && has_token_boundary(upper, 4) {
-            return Some(false);
+            return Some(ReviewVerdict::Fail);
         }
         // Also accept lines with clear verdict keywords, but only if PASS/FAIL
         // appears as a standalone token (not a substring like "FAILSAFE" or "PASSWORD").
         if contains_token(upper, "FAIL")
             && (upper.contains("VERDICT") || upper.contains("BLOCKING"))
         {
-            return Some(false);
+            return Some(ReviewVerdict::Fail);
         }
         if contains_token(upper, "PASS")
             && (upper.contains("VERDICT") || upper.contains("READY"))
         {
-            return Some(true);
+            return Some(ReviewVerdict::Pass);
         }
         None
     }
@@ -782,9 +794,9 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
         }
     }
 
-    // Default: optimistic PASS -- let human reviewer catch issues
-    tracing::debug!("Could not parse review verdict from AI output, defaulting to PASS");
-    true
+    // Could not parse a verdict — return Unknown so the caller can decide policy
+    tracing::debug!("Could not parse review verdict from AI output");
+    ReviewVerdict::Unknown
 }
 
 /// Extract blocking findings from AI review output for feedback to Developer agent.
@@ -943,61 +955,61 @@ mod tests {
     #[test]
     fn test_parse_review_verdict_pass() {
         let output = "## Review Summary\nPASS -- All criteria met\n\n## Verdict\nPASS: Ready for human review";
-        assert!(parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Pass);
     }
 
     #[test]
     fn test_parse_review_verdict_fail() {
         let output = "## Review Summary\nFAIL -- 2 blocking issues\n\n## Verdict\nFAIL: 2 blocking issues must be addressed";
-        assert!(!parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Fail);
     }
 
     #[test]
-    fn test_parse_review_verdict_unparseable_defaults_pass() {
+    fn test_parse_review_verdict_unparseable_returns_unknown() {
         let output = "Some random output without any verdict section";
-        assert!(parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Unknown);
     }
 
     #[test]
     fn test_parse_review_verdict_fail_in_summary() {
         let output = "## Review Summary\nFAIL -- Missing tests\n\n## Findings\nSome findings here";
-        assert!(!parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Fail);
     }
 
     #[test]
-    fn test_parse_review_verdict_template_line_defaults_pass() {
+    fn test_parse_review_verdict_template_line_returns_unknown() {
         // AI echoes the template placeholder unchanged — should not misclassify as FAIL
         let output = "## Review Summary\nThe code looks good.\n\n## Verdict\n[PASS: Ready for human review | FAIL: N blocking issues must be addressed]";
-        assert!(parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Unknown);
     }
 
     #[test]
     fn test_parse_review_verdict_bracketed_fail_detected() {
         // Unambiguous bracket-wrapped FAIL (no choice syntax) should be parsed as real FAIL
         let output = "## Verdict\n[FAIL: 0 blocking issues must be addressed]";
-        assert!(!parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Fail);
     }
 
     #[test]
     fn test_parse_review_verdict_bracketed_pass_detected() {
         // Unambiguous bracket-wrapped PASS should be parsed as real PASS
         let output = "## Verdict\n[PASS: Ready for human review]";
-        assert!(parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Pass);
     }
 
     #[test]
     fn test_parse_review_verdict_no_false_positive_password() {
         // "PASSWORD" should not match as "PASS" — requires token boundary
         let output = "## Verdict\nPASSWORD reset required for deployment";
-        // No valid verdict token, defaults to PASS
-        assert!(parse_review_verdict(output));
+        // No valid verdict token, returns Unknown
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Unknown);
     }
 
     #[test]
     fn test_parse_review_verdict_no_false_positive_passing() {
         // "PASSING" should not match as "PASS"
         let output = "## Review Summary\nPASSING tests found but more needed\n\n## Verdict\nFAIL: Missing coverage";
-        assert!(!parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Fail);
     }
 
     #[test]
@@ -1005,7 +1017,7 @@ mod tests {
         // "FAILURE" should NOT match FAIL as a verdict token (no boundary after "FAIL")
         // FAILURE is skipped due to missing token boundary; later PASS verdict should be used instead
         let output = "## Verdict\nFAILURE mode not applicable\nPASS: All good";
-        assert!(parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Pass);
     }
 
     #[test]
@@ -1013,20 +1025,20 @@ mod tests {
         // "FAILSAFE" contains "FAIL" as a substring but should NOT be treated as FAIL.
         // Even with "VERDICT" present, the token boundary check prevents a false match.
         let output = "The VERDICT is FAILSAFE mode enabled\nPASS: All good";
-        assert!(parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Pass);
     }
 
     #[test]
     fn test_parse_review_verdict_inline_colon_fail() {
         // "## Verdict: FAIL" should detect FAIL even with a colon after the header
         let output = "## Verdict: FAIL -- 2 blocking issues";
-        assert!(!parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Fail);
     }
 
     #[test]
     fn test_parse_review_verdict_inline_colon_pass() {
         let output = "## Review Summary: PASS -- All criteria met";
-        assert!(parse_review_verdict(output));
+        assert_eq!(parse_review_verdict(output), ReviewVerdict::Pass);
     }
 
     #[test]

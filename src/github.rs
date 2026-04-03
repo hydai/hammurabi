@@ -571,22 +571,44 @@ impl GitHubClient for OctocrabClient {
             let head = head.clone();
             async move {
                 let full_head = format!("{owner}:{head}");
-                let prs = client
+
+                // Prefer open PRs (common case)
+                let open_prs = client
                     .pulls(&owner, &repo)
                     .list()
-                    .head(full_head)
+                    .head(full_head.clone())
                     .state(octocrab::params::State::Open)
                     .send()
                     .await
                     .map_err(|e| {
                         HammurabiError::GitHub(format!(
-                            "find PR by head {}: {}",
+                            "find open PR by head {}: {}",
                             head,
                             format_octocrab_error(&e)
                         ))
                     })?;
 
-                Ok(prs.items.first().map(|pr| pr.number))
+                if let Some(pr) = open_prs.items.first() {
+                    return Ok(Some(pr.number));
+                }
+
+                // Fall back to closed/merged PRs for crash recovery
+                let closed_prs = client
+                    .pulls(&owner, &repo)
+                    .list()
+                    .head(full_head)
+                    .state(octocrab::params::State::Closed)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "find closed PR by head {}: {}",
+                            head,
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
+
+                Ok(closed_prs.items.first().map(|pr| pr.number))
             }
         })
         .await
@@ -808,9 +830,18 @@ pub mod mock {
         ) -> Result<Option<u64>, HammurabiError> {
             let prs = self.created_prs.lock().unwrap();
             let statuses = self.pr_statuses.lock().unwrap();
+            // Prefer open PRs first (mirrors real implementation)
             for (_, pr_head, _, _, pr_number) in prs.iter() {
                 if pr_head == head {
                     if let Some(PrStatus::Open) = statuses.get(pr_number) {
+                        return Ok(Some(*pr_number));
+                    }
+                }
+            }
+            // Fall back to closed/merged PRs
+            for (_, pr_head, _, _, pr_number) in prs.iter() {
+                if pr_head == head {
+                    if let Some(PrStatus::Merged | PrStatus::ClosedWithoutMerge) = statuses.get(pr_number) {
                         return Ok(Some(*pr_number));
                     }
                 }
