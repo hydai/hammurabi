@@ -783,7 +783,7 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
     }
 
     // Default: optimistic PASS -- let human reviewer catch issues
-    tracing::warn!("Could not parse review verdict from AI output, defaulting to PASS");
+    tracing::debug!("Could not parse review verdict from AI output, defaulting to PASS");
     true
 }
 

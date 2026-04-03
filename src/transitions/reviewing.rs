@@ -56,15 +56,36 @@ pub async fn execute(
     ctx: &TransitionContext,
     issue: &TrackedIssue,
 ) -> Result<(), HammurabiError> {
-    // Idempotency guard: if a PR already exists for this issue, transition to
-    // AwaitPRApproval instead of re-running review (prevents duplicate PRs and
-    // avoids the issue getting stuck in Reviewing state on every poller cycle).
-    if issue.impl_pr_number.is_some() {
+    // Idempotency guard: if a PR already exists for this issue (either persisted
+    // in DB or found on GitHub for the impl branch), transition to AwaitPRApproval
+    // without re-running the expensive AI review.
+    let impl_branch = format!("hammurabi/{}-impl", issue.github_issue_number);
+    let existing_pr = if issue.impl_pr_number.is_some() {
+        issue.impl_pr_number
+    } else {
+        // Check GitHub in case a PR was created but the number wasn't persisted (crash recovery)
+        match ctx.github.find_pull_request_by_head(&impl_branch).await {
+            Ok(pr) => pr,
+            Err(e) => {
+                tracing::debug!(
+                    issue = issue.github_issue_number,
+                    error = %e,
+                    "Failed to check for existing PR by branch, proceeding with review"
+                );
+                None
+            }
+        }
+    };
+    if let Some(pr_number) = existing_pr {
         tracing::info!(
             issue = issue.github_issue_number,
-            pr = issue.impl_pr_number,
+            pr = pr_number,
             "PR already exists, transitioning to AwaitPRApproval to avoid duplicate review"
         );
+        // Persist PR number if it wasn't in DB (crash recovery path)
+        if issue.impl_pr_number.is_none() {
+            ctx.db.update_issue_impl_pr(issue.id, pr_number)?;
+        }
         ctx.db.update_issue_state(
             issue.id,
             IssueState::AwaitPRApproval,
