@@ -678,7 +678,7 @@ mod tests {
                 bypass_label: raw.bypass_label.clone(),
                 hooks: entry.hooks.clone().unwrap_or_else(|| global_hooks.clone()),
                 review: entry.review.clone().or_else(|| global_review.clone()),
-                review_max_iterations: entry.review_max_iterations.unwrap_or(global_review_max_iterations),
+                review_max_iterations: entry.review_max_iterations.unwrap_or(global_review_max_iterations).max(1),
                 spec: entry.spec.clone().or_else(|| global_spec.clone()),
                 implement: entry.implement.clone().or_else(|| global_implement.clone()),
             });

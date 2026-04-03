@@ -189,12 +189,21 @@ pub async fn execute(
         ctx.db
             .update_issue_worktree(issue.id, Some(&worktree_str))?;
 
-        ctx.github
+        // Best-effort: DB state is already committed to AwaitPRApproval
+        if let Err(e) = ctx
+            .github
             .post_issue_comment(
                 issue.github_issue_number,
                 "Implementation revised based on PR feedback. Please review the updated PR.",
             )
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                issue = issue.github_issue_number,
+                error = %e,
+                "Failed to post revision comment"
+            );
+        }
 
         tracing::info!(
             issue = issue.github_issue_number,
