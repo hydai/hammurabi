@@ -18,6 +18,10 @@ fn select_issues(where_clause: &str) -> String {
     }
 }
 
+fn db_err(e: rusqlite::Error) -> HammurabiError {
+    HammurabiError::Database(e.to_string())
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -29,10 +33,10 @@ impl Database {
         } else {
             Connection::open(path)
         }
-        .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        .map_err(db_err)?;
 
         conn.execute_batch("PRAGMA journal_mode=WAL;")
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let db = Database {
             conn: Mutex::new(conn),
@@ -97,7 +101,7 @@ impl Database {
                 DROP TABLE IF EXISTS issues_old;
                 DROP TABLE IF EXISTS sub_issues;",
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         }
 
         // Check if the issues table exists (it won't on fresh installs before
@@ -249,7 +253,7 @@ impl Database {
                 timestamp TEXT NOT NULL DEFAULT (datetime('now'))
             );",
         )
-        .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        .map_err(db_err)?;
 
         Ok(())
     }
@@ -263,7 +267,7 @@ impl Database {
                 "UPDATE issues SET repo = ?1 WHERE repo = ''",
                 params![repo],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(count as u64)
     }
 
@@ -280,7 +284,7 @@ impl Database {
                 "INSERT OR IGNORE INTO issues (repo, github_issue_number, github_issue_title) VALUES (?1, ?2, ?3)",
                 params![repo, github_issue_number as i64, title],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(conn.last_insert_rowid())
     }
 
@@ -293,14 +297,14 @@ impl Database {
         let sql = select_issues("repo = ?1 AND github_issue_number = ?2");
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let result = stmt
             .query_row(params![repo, github_issue_number as i64], |row| {
                 Ok(row_to_tracked_issue(row))
             })
             .optional()
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         match result {
             Some(issue) => Ok(Some(issue)),
@@ -317,15 +321,15 @@ impl Database {
         let sql = select_issues("github_issue_number = ?1");
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let issues = stmt
             .query_map(params![github_issue_number as i64], |row| {
                 Ok(row_to_tracked_issue(row))
             })
-            .map_err(|e| HammurabiError::Database(e.to_string()))?
+            .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         Ok(issues)
     }
@@ -335,13 +339,13 @@ impl Database {
         let sql = select_issues("");
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let issues = stmt
             .query_map([], |row| Ok(row_to_tracked_issue(row)))
-            .map_err(|e| HammurabiError::Database(e.to_string()))?
+            .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         Ok(issues)
     }
@@ -354,13 +358,13 @@ impl Database {
         let sql = select_issues("repo = ?1");
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let issues = stmt
             .query_map(params![repo], |row| Ok(row_to_tracked_issue(row)))
-            .map_err(|e| HammurabiError::Database(e.to_string()))?
+            .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         Ok(issues)
     }
@@ -373,15 +377,15 @@ impl Database {
         let sql = select_issues("state = ?1");
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let issues = stmt
             .query_map(params![state.to_string()], |row| {
                 Ok(row_to_tracked_issue(row))
             })
-            .map_err(|e| HammurabiError::Database(e.to_string()))?
+            .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         Ok(issues)
     }
@@ -401,7 +405,7 @@ impl Database {
                     id
                 ],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -415,7 +419,7 @@ impl Database {
                 "UPDATE issues SET error_message = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![error_message, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -429,7 +433,7 @@ impl Database {
                 "UPDATE issues SET spec_comment_id = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![comment_id as i64, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -443,7 +447,7 @@ impl Database {
                 "UPDATE issues SET spec_content = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![spec_content, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -457,7 +461,7 @@ impl Database {
                 "UPDATE issues SET impl_pr_number = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![pr_number as i64, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -471,7 +475,7 @@ impl Database {
                 "UPDATE issues SET last_comment_id = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![comment_id as i64, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -485,7 +489,7 @@ impl Database {
                 "UPDATE issues SET last_pr_comment_id = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![comment_id as i64, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -495,7 +499,7 @@ impl Database {
             "UPDATE issues SET retry_count = retry_count + 1, updated_at = datetime('now') WHERE id = ?1",
             params![id],
         )
-        .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        .map_err(db_err)?;
 
         let count: i64 = conn
             .query_row(
@@ -503,7 +507,7 @@ impl Database {
                 params![id],
                 |row| row.get(0),
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(count as u32)
     }
 
@@ -513,7 +517,7 @@ impl Database {
                 "UPDATE issues SET retry_count = 0, updated_at = datetime('now') WHERE id = ?1",
                 params![id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -523,7 +527,7 @@ impl Database {
             "UPDATE issues SET review_count = review_count + 1, updated_at = datetime('now') WHERE id = ?1",
             params![id],
         )
-        .map_err(|e| HammurabiError::Database(e.to_string()))?;
+        .map_err(db_err)?;
 
         let count: i64 = conn
             .query_row(
@@ -531,7 +535,7 @@ impl Database {
                 params![id],
                 |row| row.get(0),
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(count as u32)
     }
 
@@ -545,7 +549,7 @@ impl Database {
                 "UPDATE issues SET review_feedback = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![feedback, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -555,7 +559,7 @@ impl Database {
                 "UPDATE issues SET review_count = 0, updated_at = datetime('now') WHERE id = ?1",
                 params![id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -565,7 +569,7 @@ impl Database {
                 "UPDATE issues SET bypass = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![bypass as i64, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -579,7 +583,7 @@ impl Database {
                 "UPDATE issues SET worktree_path = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![path, id],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -607,7 +611,7 @@ impl Database {
                     model
                 ],
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -618,7 +622,7 @@ impl Database {
                 "SELECT id, issue_id, sub_issue_id, transition, input_tokens, output_tokens, model, timestamp
                  FROM usage_log WHERE issue_id = ?1 ORDER BY timestamp",
             )
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         let entries = stmt
             .query_map(params![issue_id], |row| {
@@ -633,9 +637,9 @@ impl Database {
                     timestamp: row.get(7)?,
                 })
             })
-            .map_err(|e| HammurabiError::Database(e.to_string()))?
+            .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
-            .map_err(|e| HammurabiError::Database(e.to_string()))?;
+            .map_err(db_err)?;
 
         Ok(entries)
     }
