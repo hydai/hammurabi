@@ -308,8 +308,10 @@ pub async fn execute(
                 "Review FAILED — sending back for revision"
             );
 
-            // Extract findings and persist them before state change (crash-safe)
-            let findings = prompts::extract_blocking_findings(&result.content);
+            // Extract findings and persist them before state change (crash-safe).
+            // Truncate to avoid unbounded growth in DB and prompt context.
+            let findings_full = prompts::extract_blocking_findings(&result.content);
+            let findings: String = findings_full.chars().take(2000).collect();
             ctx.db
                 .update_issue_review_feedback(issue.id, Some(&findings))?;
 

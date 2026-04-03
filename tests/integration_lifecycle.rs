@@ -166,7 +166,7 @@ async fn test_full_lifecycle() {
     // PR is created during reviewing transition, not implementing
     assert!(issue.impl_pr_number.is_none());
 
-    // Phase 5: Auto-review (mock returns PASS verdict via default response)
+    // Phase 5: Auto-review (mock's default unparseable response defaults to PASS via parse_review_verdict)
     transitions::reviewing::execute(&ctx, &issue).await.unwrap();
 
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();

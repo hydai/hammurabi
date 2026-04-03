@@ -697,9 +697,9 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         let verdict_candidate = if let Some(rest) = trimmed.strip_prefix("## Verdict") {
-            rest.trim_start()
+            rest.trim_start().trim_start_matches(|c: char| c == ':' || c == '-').trim_start()
         } else if let Some(rest) = trimmed.strip_prefix("## Review Summary") {
-            rest.trim_start()
+            rest.trim_start().trim_start_matches(|c: char| c == ':' || c == '-').trim_start()
         } else {
             trimmed
         };
@@ -717,7 +717,7 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("## Verdict") {
-            let rest = rest.trim_start();
+            let rest = rest.trim_start().trim_start_matches(|c: char| c == ':' || c == '-').trim_start();
             if !rest.is_empty() {
                 if let Some(result) = parse_verdict_line(rest) {
                     return result;
@@ -742,7 +742,7 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("## Review Summary") {
-            let rest = rest.trim_start();
+            let rest = rest.trim_start().trim_start_matches(|c: char| c == ':' || c == '-').trim_start();
             if !rest.is_empty() {
                 if let Some(result) = parse_verdict_line(rest) {
                     return result;
@@ -985,6 +985,19 @@ mod tests {
         // "FAILURE" should NOT match FAIL as a verdict token (no boundary after "FAIL")
         // FAILURE is skipped due to missing token boundary; later PASS verdict should be used instead
         let output = "## Verdict\nFAILURE mode not applicable\nPASS: All good";
+        assert!(parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_inline_colon_fail() {
+        // "## Verdict: FAIL" should detect FAIL even with a colon after the header
+        let output = "## Verdict: FAIL -- 2 blocking issues";
+        assert!(!parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_inline_colon_pass() {
+        let output = "## Review Summary: PASS -- All criteria met";
         assert!(parse_review_verdict(output));
     }
 
