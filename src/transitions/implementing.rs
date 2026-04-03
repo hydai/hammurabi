@@ -153,11 +153,17 @@ pub async fn execute(
         &model,
     )?;
 
-    // Remove seeded CLAUDE.md so it doesn't leak into the PR, then restore
-    // the original tracked version (if any) so `git add -A` doesn't stage a deletion.
-    let _ = tokio::fs::remove_file(worktree_path.join("CLAUDE.md")).await;
-    if let Some(ref original) = original_claude_md {
-        let _ = tokio::fs::write(worktree_path.join("CLAUDE.md"), original).await;
+    // Remove the seeded CLAUDE.md only if it is still unchanged from the
+    // seeded implementation context. If the implementation intentionally
+    // modified CLAUDE.md, preserve those changes for commit.
+    let claude_md_path = worktree_path.join("CLAUDE.md");
+    let current_claude_md = tokio::fs::read_to_string(&claude_md_path).await.ok();
+    if current_claude_md.as_deref() == Some(claude_md.as_str()) {
+        if let Some(ref original) = original_claude_md {
+            let _ = tokio::fs::write(&claude_md_path, original).await;
+        } else {
+            let _ = tokio::fs::remove_file(&claude_md_path).await;
+        }
     }
 
     // Ensure all changes are committed
