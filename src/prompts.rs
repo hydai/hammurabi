@@ -658,6 +658,21 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
             || !text.as_bytes()[keyword_len].is_ascii_alphanumeric()
     }
 
+    /// Check if `keyword` appears as a standalone token anywhere in `text`
+    /// (bounded by non-alphanumeric characters or string edges).
+    fn contains_token(text: &str, keyword: &str) -> bool {
+        let klen = keyword.len();
+        for (i, _) in text.match_indices(keyword) {
+            let before_ok = i == 0 || !text.as_bytes()[i - 1].is_ascii_alphanumeric();
+            let after_ok =
+                i + klen >= text.len() || !text.as_bytes()[i + klen].is_ascii_alphanumeric();
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Extract an unambiguous verdict from a line. Returns Some(true) for PASS,
     /// Some(false) for FAIL, or None if the line is ambiguous/template/irrelevant.
     fn parse_verdict_line(trimmed: &str) -> Option<bool> {
@@ -681,11 +696,16 @@ pub fn parse_review_verdict(ai_output: &str) -> bool {
         if upper.starts_with("FAIL") && has_token_boundary(upper, 4) {
             return Some(false);
         }
-        // Also accept lines with clear verdict keywords
-        if upper.contains("FAIL") && (upper.contains("VERDICT") || upper.contains("BLOCKING")) {
+        // Also accept lines with clear verdict keywords, but only if PASS/FAIL
+        // appears as a standalone token (not a substring like "FAILSAFE" or "PASSWORD").
+        if contains_token(upper, "FAIL")
+            && (upper.contains("VERDICT") || upper.contains("BLOCKING"))
+        {
             return Some(false);
         }
-        if upper.contains("PASS") && (upper.contains("VERDICT") || upper.contains("READY")) {
+        if contains_token(upper, "PASS")
+            && (upper.contains("VERDICT") || upper.contains("READY"))
+        {
             return Some(true);
         }
         None
@@ -985,6 +1005,14 @@ mod tests {
         // "FAILURE" should NOT match FAIL as a verdict token (no boundary after "FAIL")
         // FAILURE is skipped due to missing token boundary; later PASS verdict should be used instead
         let output = "## Verdict\nFAILURE mode not applicable\nPASS: All good";
+        assert!(parse_review_verdict(output));
+    }
+
+    #[test]
+    fn test_parse_review_verdict_no_false_positive_failsafe() {
+        // "FAILSAFE" contains "FAIL" as a substring but should NOT be treated as FAIL.
+        // Even with "VERDICT" present, the token boundary check prevents a false match.
+        let output = "The VERDICT is FAILSAFE mode enabled\nPASS: All good";
         assert!(parse_review_verdict(output));
     }
 

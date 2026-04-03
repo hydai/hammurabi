@@ -102,56 +102,68 @@ pub async fn execute(
         .ok_or_else(|| HammurabiError::Worktree("invalid worktree path".to_string()))?
         .to_string();
 
-    // Run after_create hook
     let hook_timeout = hooks::hooks_timeout(&ctx.config.hooks);
-    hooks::run_hook(
-        "after_create",
-        ctx.config.hooks.after_create.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await?;
+    let model = ctx.config.ai_model_for_task("review").to_string();
 
-    // Seed CLAUDE.md for review context
-    let claude_md = prompts::claude_md_for_review(&gh_issue.title, &gh_issue.body, spec_content);
-    ctx.worktree
-        .seed_file(&worktree_path, "CLAUDE.md", &claude_md)
+    // Wrap all worktree operations so cleanup always runs, even if hooks or
+    // seeding fail before the AI invocation starts.
+    let ai_result = async {
+        hooks::run_hook(
+            "after_create",
+            ctx.config.hooks.after_create.as_deref(),
+            &worktree_path,
+            hook_timeout,
+        )
         .await?;
 
-    // Run before_run hook
-    hooks::run_hook(
-        "before_run",
-        ctx.config.hooks.before_run.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await?;
+        // Prepend review context to CLAUDE.md, preserving the project's existing
+        // instructions so hooks/tools that depend on them still work.
+        let review_md =
+            prompts::claude_md_for_review(&gh_issue.title, &gh_issue.body, spec_content);
+        let existing = tokio::fs::read_to_string(worktree_path.join("CLAUDE.md"))
+            .await
+            .unwrap_or_default();
+        let claude_md = if existing.is_empty() {
+            review_md
+        } else {
+            format!("{review_md}\n\n---\n\n{existing}")
+        };
+        ctx.worktree
+            .seed_file(&worktree_path, "CLAUDE.md", &claude_md)
+            .await?;
 
-    // Invoke AI with review prompt
-    let prompt = prompts::review_prompt(
-        &gh_issue.title,
-        &gh_issue.body,
-        spec_content,
-        &default_branch,
-    );
-    let model = ctx.config.ai_model_for_task("review").to_string();
-    let max_turns = ctx.config.ai_max_turns_for_task("review");
-    let effort = ctx.config.ai_effort_for_task("review").to_string();
+        hooks::run_hook(
+            "before_run",
+            ctx.config.hooks.before_run.as_deref(),
+            &worktree_path,
+            hook_timeout,
+        )
+        .await?;
 
-    let ai_result = ctx
-        .ai
-        .invoke(AiInvocation {
-            model: model.clone(),
-            max_turns,
-            effort,
-            worktree_path: worktree_str.clone(),
-            prompt,
-            timeout_secs: ctx.config.ai_timeout_for_task("review"),
-            stall_timeout_secs: ctx.config.ai_stall_timeout_for_task("review"),
-        })
-        .await;
+        let prompt = prompts::review_prompt(
+            &gh_issue.title,
+            &gh_issue.body,
+            spec_content,
+            &default_branch,
+        );
+        let max_turns = ctx.config.ai_max_turns_for_task("review");
+        let effort = ctx.config.ai_effort_for_task("review").to_string();
 
-    // Run after_run hook (best-effort)
+        ctx.ai
+            .invoke(AiInvocation {
+                model: model.clone(),
+                max_turns,
+                effort,
+                worktree_path: worktree_str.clone(),
+                prompt,
+                timeout_secs: ctx.config.ai_timeout_for_task("review"),
+                stall_timeout_secs: ctx.config.ai_stall_timeout_for_task("review"),
+            })
+            .await
+    }
+    .await;
+
+    // Always clean up worktree regardless of success or failure above
     hooks::run_hook_best_effort(
         "after_run",
         ctx.config.hooks.after_run.as_deref(),
@@ -159,8 +171,6 @@ pub async fn execute(
         hook_timeout,
     )
     .await;
-
-    // Always clean up worktree, regardless of AI result
     let _ = tokio::fs::remove_file(worktree_path.join("CLAUDE.md")).await;
     hooks::run_hook_best_effort(
         "before_remove",
@@ -171,7 +181,7 @@ pub async fn execute(
     .await;
     let _ = ctx.worktree.remove_worktree(&worktree_path).await;
 
-    // Now propagate AI errors after cleanup
+    // Now propagate errors after cleanup
     let result = ai_result?;
 
     tracing::info!(
