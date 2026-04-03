@@ -536,173 +536,204 @@ async fn process_issue(
     }
 
     match issue.state {
-        IssueState::Discovered => {
-            transitions::spec_drafting::execute(ctx, issue, None).await?;
+        IssueState::Discovered | IssueState::SpecDrafting => {
+            handle_spec_drafting(ctx, issue).await
         }
-        IssueState::SpecDrafting => {
-            // Re-execute on restart (idempotent)
-            transitions::spec_drafting::execute(ctx, issue, None).await?;
+        IssueState::AwaitSpecApproval => handle_await_spec_approval(ctx, issue).await,
+        IssueState::Implementing => handle_implementing(ctx, issue).await,
+        IssueState::Reviewing => handle_reviewing(ctx, issue).await,
+        IssueState::AwaitPRApproval => handle_await_pr_approval(ctx, issue).await,
+        IssueState::Failed => handle_failed(ctx, issue).await,
+        IssueState::Done => Ok(()),
+    }
+}
+
+async fn handle_spec_drafting(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<(), HammurabiError> {
+    transitions::spec_drafting::execute(ctx, issue, None).await
+}
+
+async fn handle_await_spec_approval(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<(), HammurabiError> {
+    let repo = &ctx.config.repo;
+
+    // Bypass mode: auto-approve spec without waiting for /approve
+    if issue.bypass {
+        tracing::info!(
+            issue = issue.github_issue_number,
+            "Bypass mode: auto-approving spec"
+        );
+        ctx.db.update_issue_state(
+            issue.id,
+            IssueState::Implementing,
+            Some(IssueState::AwaitSpecApproval),
+        )?;
+        ctx.github
+            .post_issue_comment(
+                issue.github_issue_number,
+                "Spec auto-approved (bypass mode). Starting implementation...",
+            )
+            .await?;
+        let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
+        transitions::implementing::execute(ctx, &updated, None).await?;
+        return Ok(());
+    }
+
+    match approval::check_comment_approval(
+        &*ctx.github,
+        issue.github_issue_number,
+        issue.last_comment_id,
+        &ctx.config.approvers,
+    )
+    .await?
+    {
+        CommentApprovalResult::Approved { comment_id } => {
+            ctx.db
+                .update_issue_last_comment(issue.id, comment_id)?;
+            ctx.db.update_issue_state(
+                issue.id,
+                IssueState::Implementing,
+                Some(IssueState::AwaitSpecApproval),
+            )?;
+            ctx.github
+                .post_issue_comment(
+                    issue.github_issue_number,
+                    "Spec approved. Starting implementation...",
+                )
+                .await?;
+            let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
+            transitions::implementing::execute(ctx, &updated, None).await?;
         }
-        IssueState::AwaitSpecApproval => {
-            // Bypass mode: auto-approve spec without waiting for /approve
-            if issue.bypass {
-                tracing::info!(
-                    issue = issue.github_issue_number,
-                    "Bypass mode: auto-approving spec"
-                );
+        CommentApprovalResult::Feedback { body, comment_id } => {
+            ctx.db
+                .update_issue_last_comment(issue.id, comment_id)?;
+            ctx.db.update_issue_state(
+                issue.id,
+                IssueState::SpecDrafting,
+                Some(IssueState::AwaitSpecApproval),
+            )?;
+            ctx.github
+                .post_issue_comment(
+                    issue.github_issue_number,
+                    "Feedback received. Revising spec...",
+                )
+                .await?;
+            let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
+            transitions::spec_drafting::execute(ctx, &updated, Some(&body)).await?;
+        }
+        CommentApprovalResult::Pending => {
+            check_stale(ctx, issue).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_implementing(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<(), HammurabiError> {
+    let feedback = issue.review_feedback.as_deref();
+    transitions::implementing::execute(ctx, issue, feedback).await
+}
+
+async fn handle_reviewing(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<(), HammurabiError> {
+    transitions::reviewing::execute(ctx, issue).await
+}
+
+async fn handle_await_pr_approval(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<(), HammurabiError> {
+    let repo = &ctx.config.repo;
+
+    // First check if PR was merged or closed
+    transitions::completion::check(ctx, issue).await?;
+    let updated = ctx.db.get_issue(repo, issue.github_issue_number)?;
+    let issue = match &updated {
+        Some(u) if u.state == IssueState::AwaitPRApproval => u,
+        _ => return Ok(()), // State changed (merged/failed), done
+    };
+
+    // PR still open — check for reviewer feedback on the PR
+    if let Some(pr_number) = issue.impl_pr_number {
+        match approval::check_comment_approval(
+            &*ctx.github,
+            pr_number,
+            issue.last_pr_comment_id,
+            &ctx.config.approvers,
+        )
+        .await?
+        {
+            CommentApprovalResult::Feedback { body, comment_id } => {
+                ctx.db.update_issue_last_pr_comment(issue.id, comment_id)?;
+                // Persist PR feedback before state transition so it survives crashes.
+                // The poller reads review_feedback when entering Implementing state.
+                let feedback: String = body.chars().take(2000).collect();
+                ctx.db
+                    .update_issue_review_feedback(issue.id, Some(&feedback))?;
                 ctx.db.update_issue_state(
                     issue.id,
                     IssueState::Implementing,
-                    Some(IssueState::AwaitSpecApproval),
+                    Some(IssueState::AwaitPRApproval),
                 )?;
                 ctx.github
                     .post_issue_comment(
                         issue.github_issue_number,
-                        "Spec auto-approved (bypass mode). Starting implementation...",
+                        "PR feedback received. Revising implementation...",
                     )
                     .await?;
-                let updated = ctx.db.get_issue(&ctx.config.repo, issue.github_issue_number)?.unwrap();
-                transitions::implementing::execute(ctx, &updated, None).await?;
-                return Ok(());
+                let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
+                transitions::implementing::execute(ctx, &updated, updated.review_feedback.as_deref()).await?;
             }
-
-            match approval::check_comment_approval(
-                &*ctx.github,
-                issue.github_issue_number,
-                issue.last_comment_id,
-                &ctx.config.approvers,
-            )
-            .await?
-            {
-                CommentApprovalResult::Approved { comment_id } => {
-                    ctx.db
-                        .update_issue_last_comment(issue.id, comment_id)?;
-                    ctx.db.update_issue_state(
-                        issue.id,
-                        IssueState::Implementing,
-                        Some(IssueState::AwaitSpecApproval),
-                    )?;
-                    ctx.github
-                        .post_issue_comment(
-                            issue.github_issue_number,
-                            "Spec approved. Starting implementation...",
-                        )
-                        .await?;
-                    let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
-                    transitions::implementing::execute(ctx, &updated, None).await?;
-                }
-                CommentApprovalResult::Feedback { body, comment_id } => {
-                    ctx.db
-                        .update_issue_last_comment(issue.id, comment_id)?;
-                    ctx.db.update_issue_state(
-                        issue.id,
-                        IssueState::SpecDrafting,
-                        Some(IssueState::AwaitSpecApproval),
-                    )?;
-                    ctx.github
-                        .post_issue_comment(
-                            issue.github_issue_number,
-                            "Feedback received. Revising spec...",
-                        )
-                        .await?;
-                    let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
-                    transitions::spec_drafting::execute(ctx, &updated, Some(&body)).await?;
-                }
-                CommentApprovalResult::Pending => {
-                    check_stale(ctx, issue).await?;
-                }
+            CommentApprovalResult::Approved { comment_id } => {
+                // /approve on a PR is not meaningful — merge is the real approval.
+                // Just update the cursor so we don't re-process this comment.
+                ctx.db.update_issue_last_pr_comment(issue.id, comment_id)?;
             }
-        }
-        IssueState::Implementing => {
-            let feedback = issue.review_feedback.as_deref();
-            transitions::implementing::execute(ctx, issue, feedback).await?;
-        }
-        IssueState::Reviewing => {
-            transitions::reviewing::execute(ctx, issue).await?;
-        }
-        IssueState::AwaitPRApproval => {
-            // First check if PR was merged or closed
-            transitions::completion::check(ctx, issue).await?;
-            let updated = ctx.db.get_issue(repo, issue.github_issue_number)?;
-            let issue = match &updated {
-                Some(u) if u.state == IssueState::AwaitPRApproval => u,
-                _ => return Ok(()), // State changed (merged/failed), done
-            };
-
-            // PR still open — check for reviewer feedback on the PR
-            if let Some(pr_number) = issue.impl_pr_number {
-                match approval::check_comment_approval(
-                    &*ctx.github,
-                    pr_number,
-                    issue.last_pr_comment_id,
-                    &ctx.config.approvers,
-                )
-                .await?
-                {
-                    CommentApprovalResult::Feedback { body, comment_id } => {
-                        ctx.db.update_issue_last_pr_comment(issue.id, comment_id)?;
-                        // Persist PR feedback before state transition so it survives crashes.
-                        // The poller reads review_feedback when entering Implementing state.
-                        let feedback: String = body.chars().take(2000).collect();
-                        ctx.db
-                            .update_issue_review_feedback(issue.id, Some(&feedback))?;
-                        ctx.db.update_issue_state(
-                            issue.id,
-                            IssueState::Implementing,
-                            Some(IssueState::AwaitPRApproval),
-                        )?;
-                        ctx.github
-                            .post_issue_comment(
-                                issue.github_issue_number,
-                                "PR feedback received. Revising implementation...",
-                            )
-                            .await?;
-                        let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
-                        transitions::implementing::execute(ctx, &updated, updated.review_feedback.as_deref()).await?;
-                    }
-                    CommentApprovalResult::Approved { comment_id } => {
-                        // /approve on a PR is not meaningful — merge is the real approval.
-                        // Just update the cursor so we don't re-process this comment.
-                        ctx.db.update_issue_last_pr_comment(issue.id, comment_id)?;
-                    }
-                    CommentApprovalResult::Pending => {
-                        check_stale(ctx, issue).await?;
-                    }
-                }
-            } else {
+            CommentApprovalResult::Pending => {
                 check_stale(ctx, issue).await?;
             }
         }
-        IssueState::Failed => {
-            // Check for /retry comment
-            if let Some(comment_id) = approval::check_retry_comment(
-                &*ctx.github,
-                issue.github_issue_number,
-                issue.last_comment_id,
-                &ctx.config.approvers,
-            )
-            .await?
-            {
-                ctx.db
-                    .update_issue_last_comment(issue.id, comment_id)?;
-                if let Some(prev) = issue.previous_state {
-                    ctx.db
-                        .update_issue_state(issue.id, prev, None)?;
-                    ctx.db.reset_retry_count(issue.id)?;
-                    ctx.github
-                        .post_issue_comment(
-                            issue.github_issue_number,
-                            &format!("Retrying from {} state...", prev),
-                        )
-                        .await?;
-                }
-            }
-        }
-        IssueState::Done => {
-            // Nothing to do
+    } else {
+        check_stale(ctx, issue).await?;
+    }
+    Ok(())
+}
+
+async fn handle_failed(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<(), HammurabiError> {
+    // Check for /retry comment
+    if let Some(comment_id) = approval::check_retry_comment(
+        &*ctx.github,
+        issue.github_issue_number,
+        issue.last_comment_id,
+        &ctx.config.approvers,
+    )
+    .await?
+    {
+        ctx.db
+            .update_issue_last_comment(issue.id, comment_id)?;
+        if let Some(prev) = issue.previous_state {
+            ctx.db
+                .update_issue_state(issue.id, prev, None)?;
+            ctx.db.reset_retry_count(issue.id)?;
+            ctx.github
+                .post_issue_comment(
+                    issue.github_issue_number,
+                    &format!("Retrying from {} state...", prev),
+                )
+                .await?;
         }
     }
-
     Ok(())
 }
 
