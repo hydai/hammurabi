@@ -4,6 +4,11 @@ use std::sync::Arc;
 
 use crate::error::HammurabiError;
 
+fn path_to_str(path: &Path) -> Result<&str, HammurabiError> {
+    path.to_str()
+        .ok_or_else(|| HammurabiError::Worktree("path contains invalid UTF-8".into()))
+}
+
 #[async_trait]
 pub trait TokenProvider: Send + Sync {
     async fn get_token(&self) -> Result<String, HammurabiError>;
@@ -248,12 +253,14 @@ impl WorktreeManager for GitWorktreeManager {
 
         // Clean up any stale init worktree
         if init_path.exists() {
-            let _ = self
-                .run_git(
-                    &["worktree", "remove", "--force", init_path.to_str().unwrap()],
-                    &self.bare_clone_path,
-                )
-                .await;
+            if let Ok(s) = path_to_str(&init_path) {
+                let _ = self
+                    .run_git(
+                        &["worktree", "remove", "--force", s],
+                        &self.bare_clone_path,
+                    )
+                    .await;
+            }
             if init_path.exists() {
                 let _ = tokio::fs::remove_dir_all(&init_path).await;
             }
@@ -266,7 +273,7 @@ impl WorktreeManager for GitWorktreeManager {
         self.run_git(
             &[
                 "worktree", "add", "--detach",
-                init_path.to_str().unwrap(),
+                path_to_str(&init_path)?,
             ],
             &self.bare_clone_path,
         )
@@ -296,12 +303,14 @@ impl WorktreeManager for GitWorktreeManager {
         .await?;
 
         // Clean up
-        let _ = self
-            .run_git(
-                &["worktree", "remove", "--force", init_path.to_str().unwrap()],
-                &self.bare_clone_path,
-            )
-            .await;
+        if let Ok(s) = path_to_str(&init_path) {
+            let _ = self
+                .run_git(
+                    &["worktree", "remove", "--force", s],
+                    &self.bare_clone_path,
+                )
+                .await;
+        }
         let _ = self
             .run_git(&["worktree", "prune"], &self.bare_clone_path)
             .await;
@@ -341,12 +350,14 @@ impl WorktreeManager for GitWorktreeManager {
 
         // Remove stale worktree if exists
         if worktree_path.exists() {
-            let _ = self
-                .run_git(
-                    &["worktree", "remove", "--force", worktree_path.to_str().unwrap()],
-                    &self.bare_clone_path,
-                )
-                .await;
+            if let Ok(s) = path_to_str(&worktree_path) {
+                let _ = self
+                    .run_git(
+                        &["worktree", "remove", "--force", s],
+                        &self.bare_clone_path,
+                    )
+                    .await;
+            }
             if worktree_path.exists() {
                 tokio::fs::remove_dir_all(&worktree_path)
                     .await
@@ -367,7 +378,7 @@ impl WorktreeManager for GitWorktreeManager {
             &[
                 "worktree",
                 "add",
-                worktree_path.to_str().unwrap(),
+                path_to_str(&worktree_path)?,
                 "-b",
                 &branch,
                 &base_ref,
@@ -384,12 +395,14 @@ impl WorktreeManager for GitWorktreeManager {
             return Ok(());
         }
 
-        let _ = self
-            .run_git(
-                &["worktree", "remove", "--force", path.to_str().unwrap()],
-                &self.bare_clone_path,
-            )
-            .await;
+        if let Ok(s) = path_to_str(path) {
+            let _ = self
+                .run_git(
+                    &["worktree", "remove", "--force", s],
+                    &self.bare_clone_path,
+                )
+                .await;
+        }
 
         // Force remove if git worktree remove didn't work
         if path.exists() {
