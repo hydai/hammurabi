@@ -4,6 +4,20 @@ use std::sync::Mutex;
 use crate::error::HammurabiError;
 use crate::models::{IssueState, TrackedIssue, UsageEntry};
 
+const ISSUE_COLUMNS: &str = "\
+    id, repo, github_issue_number, github_issue_title, state, spec_comment_id, \
+    spec_content, impl_pr_number, last_comment_id, last_pr_comment_id, \
+    previous_state, error_message, worktree_path, retry_count, review_count, \
+    review_feedback, bypass, created_at, updated_at";
+
+fn select_issues(where_clause: &str) -> String {
+    if where_clause.is_empty() {
+        format!("SELECT {} FROM issues", ISSUE_COLUMNS)
+    } else {
+        format!("SELECT {} FROM issues WHERE {}", ISSUE_COLUMNS, where_clause)
+    }
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -276,14 +290,9 @@ impl Database {
         github_issue_number: u64,
     ) -> Result<Option<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
+        let sql = select_issues("repo = ?1 AND github_issue_number = ?2");
         let mut stmt = conn
-            .prepare(
-                "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
-                        spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, review_count,
-                        review_feedback, bypass, created_at, updated_at
-                 FROM issues WHERE repo = ?1 AND github_issue_number = ?2",
-            )
+            .prepare(&sql)
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
 
         let result = stmt
@@ -305,14 +314,9 @@ impl Database {
         github_issue_number: u64,
     ) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
+        let sql = select_issues("github_issue_number = ?1");
         let mut stmt = conn
-            .prepare(
-                "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
-                        spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, review_count,
-                        review_feedback, bypass, created_at, updated_at
-                 FROM issues WHERE github_issue_number = ?1",
-            )
+            .prepare(&sql)
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
 
         let issues = stmt
@@ -328,14 +332,9 @@ impl Database {
 
     pub fn get_all_issues(&self) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
+        let sql = select_issues("");
         let mut stmt = conn
-            .prepare(
-                "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
-                        spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, review_count,
-                        review_feedback, bypass, created_at, updated_at
-                 FROM issues",
-            )
+            .prepare(&sql)
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
 
         let issues = stmt
@@ -352,14 +351,9 @@ impl Database {
         repo: &str,
     ) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
+        let sql = select_issues("repo = ?1");
         let mut stmt = conn
-            .prepare(
-                "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
-                        spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, review_count,
-                        review_feedback, bypass, created_at, updated_at
-                 FROM issues WHERE repo = ?1",
-            )
+            .prepare(&sql)
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
 
         let issues = stmt
@@ -376,14 +370,9 @@ impl Database {
         state: IssueState,
     ) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
+        let sql = select_issues("state = ?1");
         let mut stmt = conn
-            .prepare(
-                "SELECT id, repo, github_issue_number, github_issue_title, state, spec_comment_id,
-                        spec_content, impl_pr_number, last_comment_id, last_pr_comment_id,
-                        previous_state, error_message, worktree_path, retry_count, review_count,
-                        review_feedback, bypass, created_at, updated_at
-                 FROM issues WHERE state = ?1",
-            )
+            .prepare(&sql)
             .map_err(|e| HammurabiError::Database(e.to_string()))?;
 
         let issues = stmt
