@@ -111,54 +111,43 @@ pub struct RepoConfig {
 }
 
 impl RepoConfig {
-    pub fn ai_model_for_task(&self, task: &str) -> &str {
-        let override_model = match task {
-            "spec" => self.spec.as_ref().and_then(|c| c.ai_model.as_deref()),
-            "implement" => self.implement.as_ref().and_then(|c| c.ai_model.as_deref()),
-            "review" => self.review.as_ref().and_then(|c| c.ai_model.as_deref()),
+    fn task_config(&self, task: &str) -> Option<&AiTaskConfig> {
+        match task {
+            "spec" => self.spec.as_ref(),
+            "implement" => self.implement.as_ref(),
+            "review" => self.review.as_ref(),
             _ => None,
-        };
-        override_model.unwrap_or(&self.ai_model)
+        }
+    }
+
+    pub fn ai_model_for_task(&self, task: &str) -> &str {
+        self.task_config(task)
+            .and_then(|c| c.ai_model.as_deref())
+            .unwrap_or(&self.ai_model)
     }
 
     pub fn ai_max_turns_for_task(&self, task: &str) -> u32 {
-        let override_turns = match task {
-            "spec" => self.spec.as_ref().and_then(|c| c.ai_max_turns),
-            "implement" => self.implement.as_ref().and_then(|c| c.ai_max_turns),
-            "review" => self.review.as_ref().and_then(|c| c.ai_max_turns),
-            _ => None,
-        };
-        override_turns.unwrap_or(self.ai_max_turns)
+        self.task_config(task)
+            .and_then(|c| c.ai_max_turns)
+            .unwrap_or(self.ai_max_turns)
     }
 
     pub fn ai_effort_for_task(&self, task: &str) -> &str {
-        let override_effort = match task {
-            "spec" => self.spec.as_ref().and_then(|c| c.ai_effort.as_deref()),
-            "implement" => self.implement.as_ref().and_then(|c| c.ai_effort.as_deref()),
-            "review" => self.review.as_ref().and_then(|c| c.ai_effort.as_deref()),
-            _ => None,
-        };
-        override_effort.unwrap_or(&self.ai_effort)
+        self.task_config(task)
+            .and_then(|c| c.ai_effort.as_deref())
+            .unwrap_or(&self.ai_effort)
     }
 
     pub fn ai_timeout_for_task(&self, task: &str) -> u64 {
-        let override_val = match task {
-            "spec" => self.spec.as_ref().and_then(|c| c.ai_timeout_secs),
-            "implement" => self.implement.as_ref().and_then(|c| c.ai_timeout_secs),
-            "review" => self.review.as_ref().and_then(|c| c.ai_timeout_secs),
-            _ => None,
-        };
-        override_val.unwrap_or(self.ai_timeout_secs)
+        self.task_config(task)
+            .and_then(|c| c.ai_timeout_secs)
+            .unwrap_or(self.ai_timeout_secs)
     }
 
     pub fn ai_stall_timeout_for_task(&self, task: &str) -> u64 {
-        let override_val = match task {
-            "spec" => self.spec.as_ref().and_then(|c| c.ai_stall_timeout_secs),
-            "implement" => self.implement.as_ref().and_then(|c| c.ai_stall_timeout_secs),
-            "review" => self.review.as_ref().and_then(|c| c.ai_stall_timeout_secs),
-            _ => None,
-        };
-        override_val.unwrap_or(self.ai_stall_timeout_secs)
+        self.task_config(task)
+            .and_then(|c| c.ai_stall_timeout_secs)
+            .unwrap_or(self.ai_stall_timeout_secs)
     }
 
     /// Create a RepoConfig for a CLI-provided repo, using an existing config as
