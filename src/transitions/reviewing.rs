@@ -8,8 +8,9 @@ use super::TransitionContext;
 
 /// Create a PR, handling the case where one already exists for the head branch
 /// (e.g., after a crash between PR creation and DB persistence).
-/// On any creation failure, attempts to find an existing open PR for the branch
-/// before returning the original error.
+/// On any creation failure, attempts to find an existing PR for the branch
+/// (open first, then closed/merged for crash recovery) before returning the
+/// original error.
 async fn create_or_find_pr(
     ctx: &TransitionContext,
     title: &str,
@@ -111,8 +112,7 @@ pub async fn execute(
         .as_deref()
         .unwrap_or("No spec available");
 
-    // Create worktree from the implementation branch
-    let impl_branch = format!("hammurabi/{}-impl", issue.github_issue_number);
+    // Create worktree from the implementation branch (reuse impl_branch from above)
     let worktree_path = ctx
         .worktree
         .create_worktree(issue.github_issue_number, "review", &impl_branch)
