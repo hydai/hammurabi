@@ -1,6 +1,16 @@
 use crate::error::HammurabiError;
 use crate::models::IssueState;
 
+pub const MSG_STARTING_SPEC: &str = "Starting spec generation...";
+pub const MSG_SPEC_APPROVED: &str = "Spec approved. Starting implementation...";
+pub const MSG_SPEC_FEEDBACK: &str = "Feedback received. Revising spec...";
+pub const MSG_PR_MERGED: &str = "Implementation PR merged. Issue complete!";
+pub const MSG_PR_FEEDBACK: &str = "PR feedback received. Revising implementation...";
+pub const MSG_PR_CLOSED_ERR: &str = "Implementation PR was closed without merge";
+pub const MSG_PR_CLOSED: &str =
+    "Implementation PR was closed without merge. Issue marked as failed. Use `/retry` to retry.";
+pub const MSG_RESET: &str = "Issue reset to Discovered state.";
+
 #[derive(Debug, Clone)]
 pub enum Event {
     PollCycleActive,
@@ -47,7 +57,7 @@ pub fn transition(
                 previous_state: Some(IssueState::Discovered),
             },
             SideEffect::PostComment {
-                body: "Starting spec generation...".to_string(),
+                body: MSG_STARTING_SPEC.to_string(),
             },
             SideEffect::ExecuteSpecDrafting { feedback: None },
         ]),
@@ -71,7 +81,7 @@ pub fn transition(
                 previous_state: Some(IssueState::AwaitSpecApproval),
             },
             SideEffect::PostComment {
-                body: "Spec approved. Starting implementation...".to_string(),
+                body: MSG_SPEC_APPROVED.to_string(),
             },
             SideEffect::ExecuteImplementation,
         ]),
@@ -82,7 +92,7 @@ pub fn transition(
                 previous_state: Some(IssueState::AwaitSpecApproval),
             },
             SideEffect::PostComment {
-                body: "Feedback received. Revising spec...".to_string(),
+                body: MSG_SPEC_FEEDBACK.to_string(),
             },
             SideEffect::ExecuteSpecDrafting {
                 feedback: Some(body.clone()),
@@ -96,7 +106,7 @@ pub fn transition(
                 previous_state: Some(IssueState::AwaitPRApproval),
             },
             SideEffect::PostComment {
-                body: "Implementation PR merged. Issue complete!".to_string(),
+                body: MSG_PR_MERGED.to_string(),
             },
         ]),
 
@@ -106,7 +116,7 @@ pub fn transition(
                 previous_state: Some(IssueState::AwaitPRApproval),
             },
             SideEffect::PostComment {
-                body: "PR feedback received. Revising implementation...".to_string(),
+                body: MSG_PR_FEEDBACK.to_string(),
             },
             SideEffect::ExecuteImplementation,
         ]),
@@ -117,11 +127,10 @@ pub fn transition(
                 previous_state: Some(IssueState::AwaitPRApproval),
             },
             SideEffect::SetError {
-                message: "Implementation PR was closed without merge".to_string(),
+                message: MSG_PR_CLOSED_ERR.to_string(),
             },
             SideEffect::PostComment {
-                body: "Implementation PR was closed without merge. Issue marked as failed. Use `/retry` to retry."
-                    .to_string(),
+                body: MSG_PR_CLOSED.to_string(),
             },
         ]),
 
@@ -148,7 +157,7 @@ pub fn transition(
                 previous_state: None,
             },
             SideEffect::PostComment {
-                body: "Issue reset to Discovered state.".to_string(),
+                body: MSG_RESET.to_string(),
             },
         ]),
 
