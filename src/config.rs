@@ -51,6 +51,8 @@ struct RawRepoEntry {
     ai_max_retries: Option<u32>,
     max_concurrent_agents: Option<u32>,
     hooks: Option<HooksConfig>,
+    review: Option<AiTaskConfig>,
+    review_max_iterations: Option<u32>,
     spec: Option<AiTaskConfig>,
     implement: Option<AiTaskConfig>,
 }
@@ -78,6 +80,8 @@ struct RawConfig {
     github_app: Option<RawGitHubAppConfig>,
     bypass_label: Option<String>,
     hooks: Option<HooksConfig>,
+    review: Option<AiTaskConfig>,
+    review_max_iterations: Option<u32>,
     spec: Option<AiTaskConfig>,
     implement: Option<AiTaskConfig>,
 }
@@ -100,6 +104,8 @@ pub struct RepoConfig {
     pub approvers: Vec<String>,
     pub bypass_label: Option<String>,
     pub hooks: HooksConfig,
+    pub review: Option<AiTaskConfig>,
+    pub review_max_iterations: u32,
     pub spec: Option<AiTaskConfig>,
     pub implement: Option<AiTaskConfig>,
 }
@@ -109,6 +115,7 @@ impl RepoConfig {
         let override_model = match task {
             "spec" => self.spec.as_ref().and_then(|c| c.ai_model.as_deref()),
             "implement" => self.implement.as_ref().and_then(|c| c.ai_model.as_deref()),
+            "review" => self.review.as_ref().and_then(|c| c.ai_model.as_deref()),
             _ => None,
         };
         override_model.unwrap_or(&self.ai_model)
@@ -118,6 +125,7 @@ impl RepoConfig {
         let override_turns = match task {
             "spec" => self.spec.as_ref().and_then(|c| c.ai_max_turns),
             "implement" => self.implement.as_ref().and_then(|c| c.ai_max_turns),
+            "review" => self.review.as_ref().and_then(|c| c.ai_max_turns),
             _ => None,
         };
         override_turns.unwrap_or(self.ai_max_turns)
@@ -127,6 +135,7 @@ impl RepoConfig {
         let override_effort = match task {
             "spec" => self.spec.as_ref().and_then(|c| c.ai_effort.as_deref()),
             "implement" => self.implement.as_ref().and_then(|c| c.ai_effort.as_deref()),
+            "review" => self.review.as_ref().and_then(|c| c.ai_effort.as_deref()),
             _ => None,
         };
         override_effort.unwrap_or(&self.ai_effort)
@@ -136,6 +145,7 @@ impl RepoConfig {
         let override_val = match task {
             "spec" => self.spec.as_ref().and_then(|c| c.ai_timeout_secs),
             "implement" => self.implement.as_ref().and_then(|c| c.ai_timeout_secs),
+            "review" => self.review.as_ref().and_then(|c| c.ai_timeout_secs),
             _ => None,
         };
         override_val.unwrap_or(self.ai_timeout_secs)
@@ -145,6 +155,7 @@ impl RepoConfig {
         let override_val = match task {
             "spec" => self.spec.as_ref().and_then(|c| c.ai_stall_timeout_secs),
             "implement" => self.implement.as_ref().and_then(|c| c.ai_stall_timeout_secs),
+            "review" => self.review.as_ref().and_then(|c| c.ai_stall_timeout_secs),
             _ => None,
         };
         override_val.unwrap_or(self.ai_stall_timeout_secs)
@@ -175,6 +186,8 @@ impl RepoConfig {
                 approvers: b.approvers.clone(),
                 bypass_label: b.bypass_label.clone(),
                 hooks: b.hooks.clone(),
+                review: b.review.clone(),
+                review_max_iterations: b.review_max_iterations,
                 spec: b.spec.clone(),
                 implement: b.implement.clone(),
             })
@@ -299,6 +312,8 @@ pub fn load() -> Result<Config, HammurabiError> {
             github_app: None,
             bypass_label: None,
             hooks: None,
+            review: None,
+            review_max_iterations: None,
             spec: None,
             implement: None,
         }
@@ -344,6 +359,12 @@ pub fn load() -> Result<Config, HammurabiError> {
 
     let global_approvers = raw.approvers.unwrap_or_default();
     let global_hooks = raw.hooks.unwrap_or_default();
+    let global_review = raw.review;
+    let mut global_review_max_iterations = raw.review_max_iterations.unwrap_or(2);
+    env_override("review_max_iterations", &mut global_review_max_iterations);
+    if global_review_max_iterations < 1 {
+        global_review_max_iterations = 1;
+    }
     let global_spec = raw.spec;
     let global_implement = raw.implement;
 
@@ -448,6 +469,8 @@ pub fn load() -> Result<Config, HammurabiError> {
             ai_max_retries: None,
             max_concurrent_agents: None,
             hooks: None,
+            review: None,
+            review_max_iterations: None,
             spec: None,
             implement: None,
         }]
@@ -542,6 +565,11 @@ pub fn load() -> Result<Config, HammurabiError> {
             approvers,
             bypass_label: bypass_label.clone(),
             hooks: entry.hooks.clone().unwrap_or_else(|| global_hooks.clone()),
+            review: entry.review.clone().or_else(|| global_review.clone()),
+            review_max_iterations: entry
+                .review_max_iterations
+                .unwrap_or(global_review_max_iterations)
+                .max(1),
             spec: entry.spec.clone().or_else(|| global_spec.clone()),
             implement: entry.implement.clone().or_else(|| global_implement.clone()),
         });
@@ -581,6 +609,8 @@ mod tests {
         let global_max_concurrent_agents = raw.max_concurrent_agents.unwrap_or(5);
         let global_approvers = raw.approvers.unwrap_or_default();
         let global_hooks = raw.hooks.unwrap_or_default();
+        let global_review = raw.review;
+        let global_review_max_iterations = raw.review_max_iterations.unwrap_or(2);
         let global_spec = raw.spec;
         let global_implement = raw.implement;
 
@@ -647,6 +677,8 @@ mod tests {
                 approvers,
                 bypass_label: raw.bypass_label.clone(),
                 hooks: entry.hooks.clone().unwrap_or_else(|| global_hooks.clone()),
+                review: entry.review.clone().or_else(|| global_review.clone()),
+                review_max_iterations: entry.review_max_iterations.unwrap_or(global_review_max_iterations).max(1),
                 spec: entry.spec.clone().or_else(|| global_spec.clone()),
                 implement: entry.implement.clone().or_else(|| global_implement.clone()),
             });

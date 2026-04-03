@@ -25,6 +25,7 @@ pub enum SideEffect {
         feedback: Option<String>,
     },
     ExecuteImplementation,
+    ExecuteReview,
     PostComment {
         body: String,
     },
@@ -57,6 +58,10 @@ pub fn transition(
 
         (IssueState::Implementing, Event::PollCycleActive) => {
             Ok(vec![SideEffect::ExecuteImplementation])
+        }
+
+        (IssueState::Reviewing, Event::PollCycleActive) => {
+            Ok(vec![SideEffect::ExecuteReview])
         }
 
         // --- Spec approval (comment-based) ---
@@ -290,12 +295,38 @@ mod tests {
     }
 
     #[test]
+    fn test_reviewing_poll() {
+        let effects = transition(IssueState::Reviewing, Event::PollCycleActive, None).unwrap();
+        assert!(effects.contains(&SideEffect::ExecuteReview));
+    }
+
+    #[test]
+    fn test_transition_error_reviewing() {
+        let effects = transition(
+            IssueState::Reviewing,
+            Event::TransitionError {
+                message: "review failed".to_string(),
+            },
+            None,
+        )
+        .unwrap();
+        assert!(effects.contains(&SideEffect::UpdateState {
+            new_state: IssueState::Failed,
+            previous_state: Some(IssueState::Reviewing),
+        }));
+        assert!(effects.contains(&SideEffect::SetError {
+            message: "review failed".to_string(),
+        }));
+    }
+
+    #[test]
     fn test_reset_from_any_state() {
         let states = [
             IssueState::Discovered,
             IssueState::SpecDrafting,
             IssueState::AwaitSpecApproval,
             IssueState::Implementing,
+            IssueState::Reviewing,
             IssueState::AwaitPRApproval,
             IssueState::Done,
             IssueState::Failed,
@@ -316,6 +347,7 @@ mod tests {
             IssueState::SpecDrafting,
             IssueState::AwaitSpecApproval,
             IssueState::Implementing,
+            IssueState::Reviewing,
             IssueState::AwaitPRApproval,
             IssueState::Failed,
         ];

@@ -614,7 +614,11 @@ async fn process_issue(
             }
         }
         IssueState::Implementing => {
-            transitions::implementing::execute(ctx, issue, None).await?;
+            let feedback = issue.review_feedback.as_deref();
+            transitions::implementing::execute(ctx, issue, feedback).await?;
+        }
+        IssueState::Reviewing => {
+            transitions::reviewing::execute(ctx, issue).await?;
         }
         IssueState::AwaitPRApproval => {
             // First check if PR was merged or closed
@@ -637,6 +641,11 @@ async fn process_issue(
                 {
                     CommentApprovalResult::Feedback { body, comment_id } => {
                         ctx.db.update_issue_last_pr_comment(issue.id, comment_id)?;
+                        // Persist PR feedback before state transition so it survives crashes.
+                        // The poller reads review_feedback when entering Implementing state.
+                        let feedback: String = body.chars().take(2000).collect();
+                        ctx.db
+                            .update_issue_review_feedback(issue.id, Some(&feedback))?;
                         ctx.db.update_issue_state(
                             issue.id,
                             IssueState::Implementing,
@@ -649,7 +658,7 @@ async fn process_issue(
                             )
                             .await?;
                         let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
-                        transitions::implementing::execute(ctx, &updated, Some(&body)).await?;
+                        transitions::implementing::execute(ctx, &updated, updated.review_feedback.as_deref()).await?;
                     }
                     CommentApprovalResult::Approved { comment_id } => {
                         // /approve on a PR is not meaningful — merge is the real approval.
@@ -730,7 +739,8 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
             // Active states: will re-execute on next poll cycle (idempotent)
             IssueState::Discovered
             | IssueState::SpecDrafting
-            | IssueState::Implementing => {
+            | IssueState::Implementing
+            | IssueState::Reviewing => {
                 tracing::info!(
                     repo = %repo,
                     issue = issue.github_issue_number,

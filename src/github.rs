@@ -85,6 +85,10 @@ pub trait GitHubClient: Send + Sync {
         issue_number: u64,
         label: &str,
     ) -> Result<Option<String>, HammurabiError>;
+    async fn find_pull_request_by_head(
+        &self,
+        head: &str,
+    ) -> Result<Option<u64>, HammurabiError>;
 }
 
 pub struct OctocrabClient {
@@ -550,6 +554,65 @@ impl GitHubClient for OctocrabClient {
         })
         .await
     }
+
+    async fn find_pull_request_by_head(
+        &self,
+        head: &str,
+    ) -> Result<Option<u64>, HammurabiError> {
+        let owner = self.owner.clone();
+        let repo = self.repo.clone();
+        let client = self.client.clone();
+        let head = head.to_string();
+
+        self.retry(|| {
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let client = client.clone();
+            let head = head.clone();
+            async move {
+                let full_head = format!("{owner}:{head}");
+
+                // Prefer open PRs (common case)
+                let open_prs = client
+                    .pulls(&owner, &repo)
+                    .list()
+                    .head(full_head.clone())
+                    .state(octocrab::params::State::Open)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "find open PR by head {}: {}",
+                            head,
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
+
+                if let Some(pr) = open_prs.items.first() {
+                    return Ok(Some(pr.number));
+                }
+
+                // Fall back to closed/merged PRs for crash recovery
+                let closed_prs = client
+                    .pulls(&owner, &repo)
+                    .list()
+                    .head(full_head)
+                    .state(octocrab::params::State::Closed)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "find closed PR by head {}: {}",
+                            head,
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
+
+                Ok(closed_prs.items.first().map(|pr| pr.number))
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -563,7 +626,7 @@ pub mod mock {
         pub comments: Mutex<HashMap<u64, Vec<GitHubComment>>>,
         pub pr_statuses: Mutex<HashMap<u64, PrStatus>>,
         pub created_comments: Mutex<Vec<(u64, String)>>,
-        pub created_prs: Mutex<Vec<(String, String, String, String)>>,
+        pub created_prs: Mutex<Vec<(String, String, String, String, u64)>>,
         pub created_issues: Mutex<Vec<(String, String)>>,
         pub file_contents: Mutex<HashMap<(String, String), String>>,
         pub label_adders: Mutex<HashMap<(u64, String), String>>,
@@ -692,6 +755,7 @@ pub mod mock {
                 head.to_string(),
                 base.to_string(),
                 body.to_string(),
+                pr,
             ));
             self.pr_statuses
                 .lock()
@@ -758,6 +822,31 @@ pub mod mock {
             Ok(adders
                 .get(&(issue_number, label.to_string()))
                 .cloned())
+        }
+
+        async fn find_pull_request_by_head(
+            &self,
+            head: &str,
+        ) -> Result<Option<u64>, HammurabiError> {
+            let prs = self.created_prs.lock().unwrap();
+            let statuses = self.pr_statuses.lock().unwrap();
+            // Prefer open PRs first (mirrors real implementation)
+            for (_, pr_head, _, _, pr_number) in prs.iter() {
+                if pr_head == head {
+                    if let Some(PrStatus::Open) = statuses.get(pr_number) {
+                        return Ok(Some(*pr_number));
+                    }
+                }
+            }
+            // Fall back to closed/merged PRs
+            for (_, pr_head, _, _, pr_number) in prs.iter() {
+                if pr_head == head {
+                    if let Some(PrStatus::Merged | PrStatus::ClosedWithoutMerge) = statuses.get(pr_number) {
+                        return Ok(Some(*pr_number));
+                    }
+                }
+            }
+            Ok(None)
         }
     }
 }

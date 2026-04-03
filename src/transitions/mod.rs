@@ -1,5 +1,6 @@
 pub mod completion;
 pub mod implementing;
+pub mod reviewing;
 pub mod spec_drafting;
 
 use std::sync::Arc;
