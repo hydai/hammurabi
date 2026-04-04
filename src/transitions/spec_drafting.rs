@@ -169,36 +169,13 @@ mod tests {
     use super::*;
     use crate::claude::mock::MockAiAgent;
     use crate::claude::AiResult;
-    use crate::config::RepoConfig;
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::GitHubIssue;
     use crate::worktree::mock::MockWorktreeManager;
     use std::sync::Arc;
 
-    fn test_config() -> RepoConfig {
-        RepoConfig {
-            repo: "owner/repo".to_string(),
-            owner: "owner".to_string(),
-            repo_name: "repo".to_string(),
-            tracking_label: "hammurabi".to_string(),
-            stale_timeout_days: 7,
-            ai_model: "test-model".to_string(),
-            ai_max_turns: 50,
-            ai_effort: "high".to_string(),
-            ai_timeout_secs: 3600,
-            ai_stall_timeout_secs: 0,
-            ai_max_retries: 2,
-            max_concurrent_agents: 5,
-            hooks: crate::config::HooksConfig::default(),
-            approvers: vec!["alice".to_string()],
-            bypass_label: None,
-            review: None,
-            review_max_iterations: 2,
-            spec: None,
-            implement: None,
-        }
-    }
+    use crate::transitions::test_helpers::test_config;
 
     #[tokio::test]
     async fn test_spec_drafting_posts_comment() {
