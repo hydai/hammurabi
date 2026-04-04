@@ -1,0 +1,38 @@
+[package]
+versioned_files = ["Cargo.toml", "Cargo.lock"]
+changelog = "CHANGELOG.md"
+assets = "artifacts/*"
+
+[github]
+owner = "hydai"
+repo = "hammurabi"
+
+[[workflows]]
+name = "prepare-release"
+
+[[workflows.steps]]
+type = "Command"
+command = "git switch -c release"
+
+[[workflows.steps]]
+type = "PrepareRelease"
+
+[[workflows.steps]]
+type = "Command"
+command = "git commit -m 'chore: prepare release' --signoff --all"
+
+[[workflows.steps]]
+type = "Command"
+command = "git push --force-with-lease --set-upstream origin release"
+
+[[workflows.steps]]
+type = "CreatePullRequest"
+base = "main"
+title = "chore: release $version"
+body = "$changelog"
+
+[[workflows]]
+name = "release"
+
+[[workflows.steps]]
+type = "Release"

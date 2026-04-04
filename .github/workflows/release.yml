@@ -1,19 +1,20 @@
-name: Build
+name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  pull_request:
+    types: [closed]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag (e.g. v0.1.0). If set, a GitHub Release is created."
-        required: false
 
 env:
   CARGO_TERM_COLOR: always
 
+permissions: {}
+
 jobs:
   build:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.head_ref == 'release' && github.event.pull_request.merged == true)
     name: Build - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -34,14 +35,21 @@ jobs:
             artifact: hammurabi.exe
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Harden runner
+        uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
+        if: runner.os == 'Linux'
         with:
-          ref: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.tag) || github.ref }}
+          egress-policy: audit
 
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Build
         run: cargo build --locked --release --target ${{ matrix.target }}
@@ -59,7 +67,7 @@ jobs:
           7z a ../../../hammurabi-${{ matrix.target }}.zip ${{ matrix.artifact }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: hammurabi-${{ matrix.target }}
           path: hammurabi-${{ matrix.target }}.*
@@ -68,20 +76,29 @@ jobs:
   release:
     name: Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Harden runner
+        uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Create release
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2
+      - uses: knope-dev/action@407e9ef7c272d2dd53a4e71e39a7839e29933c48 # v2.1.0
         with:
-          tag_name: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.tag) || github.ref_name }}
-          generate_release_notes: true
-          files: artifacts/*
+          version: 0.22.2
+
+      - name: Release
+        run: knope release --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
