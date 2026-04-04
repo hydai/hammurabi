@@ -60,7 +60,7 @@ pub async fn execute(
     // Idempotency guard: if a PR already exists for this issue (either persisted
     // in DB or found on GitHub for the impl branch), transition to AwaitPRApproval
     // without re-running the expensive AI review.
-    let impl_branch = format!("hammurabi/{}-impl", issue.github_issue_number);
+    let impl_branch = crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
     let existing_pr = if issue.impl_pr_number.is_some() {
         issue.impl_pr_number
     } else {
@@ -247,7 +247,7 @@ pub async fn execute(
             }
 
             // Create (or find) PR for the implementation branch (already pushed by implementing transition)
-            let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
+            let branch_name = crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
             let pr_title = gh_issue.title.clone();
             let pr_body = if is_unknown {
                 format!(
@@ -312,7 +312,7 @@ pub async fn execute(
                 );
 
                 // Create (or find) PR with review findings (branch already pushed by implementing transition)
-                let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
+                let branch_name = crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
                 let findings = prompts::extract_blocking_findings(&result.content);
                 let pr_title = gh_issue.title.clone();
                 let pr_body = format!(

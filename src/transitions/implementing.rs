@@ -43,7 +43,7 @@ pub async fn execute(
     // For revisions, create worktree from the existing impl branch;
     // for first run, create from default branch
     let base_branch = if is_revision {
-        format!("hammurabi/{}-impl", issue.github_issue_number)
+        crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL)
     } else {
         default_branch.clone()
     };
@@ -192,7 +192,7 @@ pub async fn execute(
     }
 
     // Push branch
-    let branch_name = format!("hammurabi/{}-impl", issue.github_issue_number);
+    let branch_name = crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
     ctx.worktree.push_branch(&branch_name).await?;
 
     if has_pr {

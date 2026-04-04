@@ -4,6 +4,15 @@ use std::sync::Arc;
 
 use crate::error::HammurabiError;
 
+pub const TASK_SPEC: &str = "spec";
+pub const TASK_IMPL: &str = "impl";
+pub const TASK_REVIEW: &str = "review";
+
+/// Build a branch name for a Hammurabi-managed worktree.
+pub fn branch_name(issue_number: u64, task_name: &str) -> String {
+    format!("hammurabi/{}-{}", issue_number, task_name)
+}
+
 fn path_to_str(path: &Path) -> Result<&str, HammurabiError> {
     path.to_str()
         .ok_or_else(|| HammurabiError::Worktree("path contains invalid UTF-8".into()))
@@ -110,8 +119,8 @@ impl GitWorktreeManager {
         }
     }
 
-    fn branch_name(issue_number: u64, task_name: &str) -> String {
-        format!("hammurabi/{}-{}", issue_number, task_name)
+    fn branch_name_for(issue_number: u64, task_name: &str) -> String {
+        branch_name(issue_number, task_name)
     }
 
     fn worktree_dir_name(issue_number: u64, task_name: &str) -> String {
@@ -349,7 +358,7 @@ impl WorktreeManager for GitWorktreeManager {
 
         let dir_name = Self::worktree_dir_name(issue_number, task_name);
         let worktree_path = self.worktrees_dir.join(&dir_name);
-        let branch = Self::branch_name(issue_number, task_name);
+        let branch = Self::branch_name_for(issue_number, task_name);
 
         // Remove stale worktree if exists
         if worktree_path.exists() {
@@ -610,11 +619,11 @@ mod tests {
     #[test]
     fn test_branch_naming() {
         assert_eq!(
-            GitWorktreeManager::branch_name(42, "spec"),
+            branch_name(42, "spec"),
             "hammurabi/42-spec"
         );
         assert_eq!(
-            GitWorktreeManager::branch_name(42, "sub1"),
+            branch_name(42, "sub1"),
             "hammurabi/42-sub1"
         );
     }
