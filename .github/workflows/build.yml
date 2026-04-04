@@ -63,6 +63,7 @@ jobs:
         with:
           name: hammurabi-${{ matrix.target }}
           path: hammurabi-${{ matrix.target }}.*
+          if-no-files-found: error
 
   release:
     name: Release
