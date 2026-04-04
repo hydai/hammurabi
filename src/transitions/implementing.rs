@@ -32,10 +32,7 @@ pub async fn execute(
     let gh_issue = ctx.github.get_issue(issue.github_issue_number).await?;
     let default_branch = ctx.github.get_default_branch().await?;
 
-    let spec_content = issue
-        .spec_content
-        .as_deref()
-        .unwrap_or("No spec available");
+    let spec_content = issue.spec_content.as_deref().unwrap_or("No spec available");
 
     let base_branch = if is_revision {
         crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL)
@@ -49,12 +46,8 @@ pub async fn execute(
         spec_content,
         feedback,
     );
-    let prompt = prompts::implementation_prompt(
-        &gh_issue.title,
-        &gh_issue.body,
-        spec_content,
-        feedback,
-    );
+    let prompt =
+        prompts::implementation_prompt(&gh_issue.title, &gh_issue.body, spec_content, feedback);
 
     let lifecycle = super::run_ai_lifecycle(
         ctx,
@@ -128,7 +121,8 @@ pub async fn execute(
     }
 
     // Push branch
-    let branch_name = crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
+    let branch_name =
+        crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
     ctx.worktree.push_branch(&branch_name).await?;
 
     if has_pr {
@@ -138,8 +132,7 @@ pub async fn execute(
             IssueState::AwaitPRApproval,
             Some(IssueState::Implementing),
         )?;
-        ctx.db
-            .update_issue_worktree(issue.id, Some(worktree_str))?;
+        ctx.db.update_issue_worktree(issue.id, Some(worktree_str))?;
 
         // Best-effort: DB state is already committed to AwaitPRApproval
         if let Err(e) = ctx
@@ -169,8 +162,7 @@ pub async fn execute(
             IssueState::Reviewing,
             Some(IssueState::Implementing),
         )?;
-        ctx.db
-            .update_issue_worktree(issue.id, Some(worktree_str))?;
+        ctx.db.update_issue_worktree(issue.id, Some(worktree_str))?;
 
         let comment_msg = if is_revision {
             "Implementation revised based on review feedback. Running auto-review..."
@@ -281,7 +273,9 @@ mod tests {
 
         // Comment should mention auto-review
         let comments = gh.created_comments.lock().unwrap();
-        assert!(comments.iter().any(|(_, body)| body.contains("auto-review")));
+        assert!(comments
+            .iter()
+            .any(|(_, body)| body.contains("auto-review")));
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
@@ -343,7 +337,8 @@ mod tests {
         let db = Arc::new(Database::open(":memory:").unwrap());
         db.insert_issue("owner/repo", 1, "Add feature X").unwrap();
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
-        db.update_issue_spec_content(issue.id, "# Spec\nDo X").unwrap();
+        db.update_issue_spec_content(issue.id, "# Spec\nDo X")
+            .unwrap();
         db.update_issue_impl_pr(issue.id, 42).unwrap();
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
@@ -355,7 +350,9 @@ mod tests {
             config: Arc::new(test_config()),
         };
 
-        execute(&ctx, &issue, Some("Fix the error handling")).await.unwrap();
+        execute(&ctx, &issue, Some("Fix the error handling"))
+            .await
+            .unwrap();
 
         // Should NOT create a new PR
         let prs = gh.created_prs.lock().unwrap();
@@ -411,7 +408,8 @@ mod tests {
         let db = Arc::new(Database::open(":memory:").unwrap());
         db.insert_issue("owner/repo", 1, "Add feature X").unwrap();
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
-        db.update_issue_spec_content(issue.id, "# Spec\nDo X").unwrap();
+        db.update_issue_spec_content(issue.id, "# Spec\nDo X")
+            .unwrap();
         // Note: impl_pr_number is NOT set (no PR yet)
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert!(issue.impl_pr_number.is_none());
@@ -424,7 +422,9 @@ mod tests {
             config: Arc::new(test_config()),
         };
 
-        execute(&ctx, &issue, Some("Missing tests found in review")).await.unwrap();
+        execute(&ctx, &issue, Some("Missing tests found in review"))
+            .await
+            .unwrap();
 
         // Should NOT create a PR (no PR path — goes to Reviewing)
         let prs = gh.created_prs.lock().unwrap();

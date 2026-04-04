@@ -10,13 +10,11 @@ pub struct LockFile {
 impl LockFile {
     pub fn acquire(path: &Path) -> Result<Self, HammurabiError> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(HammurabiError::Io)?;
+            fs::create_dir_all(parent).map_err(HammurabiError::Io)?;
         }
 
         if path.exists() {
-            let content = fs::read_to_string(path)
-                .map_err(HammurabiError::Io)?;
+            let content = fs::read_to_string(path).map_err(HammurabiError::Io)?;
             if let Ok(pid) = content.trim().parse::<u32>() {
                 if is_process_running(pid) {
                     return Err(HammurabiError::Config(format!(
@@ -31,8 +29,7 @@ impl LockFile {
         }
 
         let pid = std::process::id();
-        fs::write(path, pid.to_string())
-            .map_err(HammurabiError::Io)?;
+        fs::write(path, pid.to_string()).map_err(HammurabiError::Io)?;
 
         Ok(LockFile {
             path: path.to_path_buf(),

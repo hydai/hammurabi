@@ -14,7 +14,10 @@ fn select_issues(where_clause: &str) -> String {
     if where_clause.is_empty() {
         format!("SELECT {} FROM issues", ISSUE_COLUMNS)
     } else {
-        format!("SELECT {} FROM issues WHERE {}", ISSUE_COLUMNS, where_clause)
+        format!(
+            "SELECT {} FROM issues WHERE {}",
+            ISSUE_COLUMNS, where_clause
+        )
     }
 }
 
@@ -107,19 +110,17 @@ impl Database {
         // Check if the issues table exists (it won't on fresh installs before
         // CREATE TABLE IF NOT EXISTS runs below). Incremental migrations must
         // only run when the table is present.
-        let table_exists = conn
-            .prepare("SELECT id FROM issues LIMIT 0")
-            .is_ok();
+        let table_exists = conn.prepare("SELECT id FROM issues LIMIT 0").is_ok();
 
         // Add last_pr_comment_id column if missing (incremental migration)
         let has_pr_comment_col = conn
             .prepare("SELECT last_pr_comment_id FROM issues LIMIT 0")
             .is_ok();
         if table_exists && !has_pr_comment_col {
-            conn.execute_batch(
-                "ALTER TABLE issues ADD COLUMN last_pr_comment_id INTEGER;",
-            )
-            .map_err(|e| HammurabiError::Database(format!("last_pr_comment_id migration failed: {}", e)))?;
+            conn.execute_batch("ALTER TABLE issues ADD COLUMN last_pr_comment_id INTEGER;")
+                .map_err(|e| {
+                    HammurabiError::Database(format!("last_pr_comment_id migration failed: {}", e))
+                })?;
         }
 
         // Add retry_count column if missing (incremental migration)
@@ -130,16 +131,16 @@ impl Database {
             conn.execute_batch(
                 "ALTER TABLE issues ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;",
             )
-            .map_err(|e| HammurabiError::Database(format!("retry_count migration failed: {}", e)))?;
+            .map_err(|e| {
+                HammurabiError::Database(format!("retry_count migration failed: {}", e))
+            })?;
         }
 
         // Add repo column if missing (multi-repo migration)
         // SQLite autoindexes backing UNIQUE constraints cannot be dropped,
         // so we must rebuild the table to change UNIQUE(github_issue_number)
         // to UNIQUE(repo, github_issue_number).
-        let has_repo_col = conn
-            .prepare("SELECT repo FROM issues LIMIT 0")
-            .is_ok();
+        let has_repo_col = conn.prepare("SELECT repo FROM issues LIMIT 0").is_ok();
         if table_exists && !has_repo_col {
             conn.execute_batch(
                 "ALTER TABLE issues RENAME TO issues_old;
@@ -181,18 +182,18 @@ impl Database {
 
                 DROP TABLE issues_old;",
             )
-            .map_err(|e| HammurabiError::Database(format!("repo column migration failed: {}", e)))?;
+            .map_err(|e| {
+                HammurabiError::Database(format!("repo column migration failed: {}", e))
+            })?;
         }
 
         // Add bypass column if missing (incremental migration)
-        let has_bypass = conn
-            .prepare("SELECT bypass FROM issues LIMIT 0")
-            .is_ok();
+        let has_bypass = conn.prepare("SELECT bypass FROM issues LIMIT 0").is_ok();
         if table_exists && !has_bypass {
-            conn.execute_batch(
-                "ALTER TABLE issues ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0;",
-            )
-            .map_err(|e| HammurabiError::Database(format!("bypass column migration failed: {}", e)))?;
+            conn.execute_batch("ALTER TABLE issues ADD COLUMN bypass INTEGER NOT NULL DEFAULT 0;")
+                .map_err(|e| {
+                    HammurabiError::Database(format!("bypass column migration failed: {}", e))
+                })?;
         }
 
         // Add review_count column if missing (incremental migration)
@@ -203,7 +204,9 @@ impl Database {
             conn.execute_batch(
                 "ALTER TABLE issues ADD COLUMN review_count INTEGER NOT NULL DEFAULT 0;",
             )
-            .map_err(|e| HammurabiError::Database(format!("review_count column migration failed: {}", e)))?;
+            .map_err(|e| {
+                HammurabiError::Database(format!("review_count column migration failed: {}", e))
+            })?;
         }
 
         // Add review_feedback column if missing (incremental migration)
@@ -211,10 +214,13 @@ impl Database {
             .prepare("SELECT review_feedback FROM issues LIMIT 0")
             .is_ok();
         if table_exists && !has_review_feedback {
-            conn.execute_batch(
-                "ALTER TABLE issues ADD COLUMN review_feedback TEXT;",
-            )
-            .map_err(|e| HammurabiError::Database(format!("review_feedback column migration failed: {}", e)))?;
+            conn.execute_batch("ALTER TABLE issues ADD COLUMN review_feedback TEXT;")
+                .map_err(|e| {
+                    HammurabiError::Database(format!(
+                        "review_feedback column migration failed: {}",
+                        e
+                    ))
+                })?;
         }
 
         // Create tables if they don't exist (fresh install or post-migration)
@@ -263,10 +269,7 @@ impl Database {
     pub fn backfill_repo(&self, repo: &str) -> Result<u64, HammurabiError> {
         let conn = self.conn();
         let count = conn
-            .execute(
-                "UPDATE issues SET repo = ?1 WHERE repo = ''",
-                params![repo],
-            )
+            .execute("UPDATE issues SET repo = ?1 WHERE repo = ''", params![repo])
             .map_err(db_err)?;
         Ok(count as u64)
     }
@@ -295,9 +298,7 @@ impl Database {
     ) -> Result<Option<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
         let sql = select_issues("repo = ?1 AND github_issue_number = ?2");
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(db_err)?;
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
 
         let result = stmt
             .query_row(params![repo, github_issue_number as i64], |row| {
@@ -319,9 +320,7 @@ impl Database {
     ) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
         let sql = select_issues("github_issue_number = ?1");
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(db_err)?;
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
 
         let issues = stmt
             .query_map(params![github_issue_number as i64], |row| {
@@ -337,9 +336,7 @@ impl Database {
     pub fn get_all_issues(&self) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
         let sql = select_issues("");
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(db_err)?;
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
 
         let issues = stmt
             .query_map([], row_to_tracked_issue)
@@ -350,15 +347,10 @@ impl Database {
         Ok(issues)
     }
 
-    pub fn get_all_issues_for_repo(
-        &self,
-        repo: &str,
-    ) -> Result<Vec<TrackedIssue>, HammurabiError> {
+    pub fn get_all_issues_for_repo(&self, repo: &str) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
         let sql = select_issues("repo = ?1");
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(db_err)?;
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
 
         let issues = stmt
             .query_map(params![repo], row_to_tracked_issue)
@@ -376,14 +368,10 @@ impl Database {
     ) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
         let sql = select_issues("state = ?1");
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(db_err)?;
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
 
         let issues = stmt
-            .query_map(params![state.to_string()], |row| {
-                row_to_tracked_issue(row)
-            })
+            .query_map(params![state.to_string()], row_to_tracked_issue)
             .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
             .map_err(db_err)?;
@@ -410,11 +398,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_issue_error(
-        &self,
-        id: i64,
-        error_message: &str,
-    ) -> Result<(), HammurabiError> {
+    pub fn update_issue_error(&self, id: i64, error_message: &str) -> Result<(), HammurabiError> {
         self.conn()
             .execute(
                 "UPDATE issues SET error_message = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -452,11 +436,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_issue_impl_pr(
-        &self,
-        id: i64,
-        pr_number: u64,
-    ) -> Result<(), HammurabiError> {
+    pub fn update_issue_impl_pr(&self, id: i64, pr_number: u64) -> Result<(), HammurabiError> {
         self.conn()
             .execute(
                 "UPDATE issues SET impl_pr_number = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -574,11 +554,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_issue_worktree(
-        &self,
-        id: i64,
-        path: Option<&str>,
-    ) -> Result<(), HammurabiError> {
+    pub fn update_issue_worktree(&self, id: i64, path: Option<&str>) -> Result<(), HammurabiError> {
         self.conn()
             .execute(
                 "UPDATE issues SET worktree_path = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -728,8 +704,12 @@ mod tests {
         db.insert_issue("owner/repo", 1, "Issue 1").unwrap();
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
-        db.update_issue_state(issue.id, IssueState::SpecDrafting, Some(IssueState::Discovered))
-            .unwrap();
+        db.update_issue_state(
+            issue.id,
+            IssueState::SpecDrafting,
+            Some(IssueState::Discovered),
+        )
+        .unwrap();
 
         let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert_eq!(updated.state, IssueState::SpecDrafting);
@@ -746,7 +726,10 @@ mod tests {
             .unwrap();
 
         let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
-        assert_eq!(updated.error_message.as_deref(), Some("something went wrong"));
+        assert_eq!(
+            updated.error_message.as_deref(),
+            Some("something went wrong")
+        );
     }
 
     #[test]
@@ -771,7 +754,10 @@ mod tests {
             .unwrap();
 
         let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
-        assert_eq!(updated.spec_content.as_deref(), Some("# Spec\nDo the thing"));
+        assert_eq!(
+            updated.spec_content.as_deref(),
+            Some("# Spec\nDo the thing")
+        );
     }
 
     #[test]
@@ -836,10 +822,24 @@ mod tests {
         db.insert_issue("owner/repo", 1, "Issue 1").unwrap();
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
-        db.log_usage(issue.id, None, "spec_drafting", 1000, 2000, "claude-sonnet-4-6")
-            .unwrap();
-        db.log_usage(issue.id, None, "implementing", 500, 800, "claude-sonnet-4-6")
-            .unwrap();
+        db.log_usage(
+            issue.id,
+            None,
+            "spec_drafting",
+            1000,
+            2000,
+            "claude-sonnet-4-6",
+        )
+        .unwrap();
+        db.log_usage(
+            issue.id,
+            None,
+            "implementing",
+            500,
+            800,
+            "claude-sonnet-4-6",
+        )
+        .unwrap();
 
         let usage = db.get_usage_by_issue(issue.id).unwrap();
         assert_eq!(usage.len(), 2);
@@ -870,7 +870,8 @@ mod tests {
     fn test_insert_duplicate_issue_ignored() {
         let db = test_db();
         db.insert_issue("owner/repo", 1, "Issue 1").unwrap();
-        db.insert_issue("owner/repo", 1, "Issue 1 duplicate").unwrap(); // OR IGNORE
+        db.insert_issue("owner/repo", 1, "Issue 1 duplicate")
+            .unwrap(); // OR IGNORE
 
         let issues = db.get_all_issues().unwrap();
         assert_eq!(issues.len(), 1);

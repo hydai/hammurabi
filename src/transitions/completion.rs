@@ -4,10 +4,7 @@ use crate::models::{IssueState, TrackedIssue};
 
 use super::TransitionContext;
 
-pub async fn check(
-    ctx: &TransitionContext,
-    issue: &TrackedIssue,
-) -> Result<(), HammurabiError> {
+pub async fn check(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<(), HammurabiError> {
     let pr_number = match issue.impl_pr_number {
         Some(n) => n,
         None => return Ok(()),
@@ -40,10 +37,8 @@ pub async fn check(
                 IssueState::Failed,
                 Some(IssueState::AwaitPRApproval),
             )?;
-            ctx.db.update_issue_error(
-                issue.id,
-                "Implementation PR was closed without merge",
-            )?;
+            ctx.db
+                .update_issue_error(issue.id, "Implementation PR was closed without merge")?;
 
             ctx.github
                 .post_issue_comment(

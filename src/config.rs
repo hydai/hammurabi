@@ -330,9 +330,7 @@ pub fn load() -> Result<Config, HammurabiError> {
     let mut global_ai_max_turns = raw.ai_max_turns.unwrap_or(50);
     env_override("ai_max_turns", &mut global_ai_max_turns);
 
-    let mut global_ai_effort = raw
-        .ai_effort
-        .unwrap_or_else(|| "high".to_string());
+    let mut global_ai_effort = raw.ai_effort.unwrap_or_else(|| "high".to_string());
     env_override_string("ai_effort", &mut global_ai_effort);
 
     let mut global_ai_timeout_secs = raw.ai_timeout_secs.unwrap_or(3600);
@@ -373,10 +371,7 @@ pub fn load() -> Result<Config, HammurabiError> {
         .github_app
         .as_ref()
         .and_then(|a| a.app_id)
-        .or_else(|| {
-            env_override_option_string("github_app_id")
-                .and_then(|v| v.parse().ok())
-        });
+        .or_else(|| env_override_option_string("github_app_id").and_then(|v| v.parse().ok()));
     let app_key_path = raw
         .github_app
         .as_ref()
@@ -387,11 +382,11 @@ pub fn load() -> Result<Config, HammurabiError> {
         .as_ref()
         .and_then(|a| a.installation_id)
         .or_else(|| {
-            env_override_option_string("github_app_installation_id")
-                .and_then(|v| v.parse().ok())
+            env_override_option_string("github_app_installation_id").and_then(|v| v.parse().ok())
         });
 
-    let has_app_config = app_id.is_some() || app_key_path.is_some() || app_installation_id.is_some();
+    let has_app_config =
+        app_id.is_some() || app_key_path.is_some() || app_installation_id.is_some();
     let has_token = !github_token.is_empty();
 
     let github_auth = if has_app_config && has_token {
@@ -399,9 +394,8 @@ pub fn load() -> Result<Config, HammurabiError> {
             "set either github_token or [github_app], not both".into(),
         ));
     } else if has_app_config {
-        let app_id = app_id.ok_or_else(|| {
-            HammurabiError::Config("[github_app] requires app_id".into())
-        })?;
+        let app_id =
+            app_id.ok_or_else(|| HammurabiError::Config("[github_app] requires app_id".into()))?;
         let key_path = app_key_path.ok_or_else(|| {
             HammurabiError::Config("[github_app] requires private_key_path".into())
         })?;
@@ -441,7 +435,8 @@ pub fn load() -> Result<Config, HammurabiError> {
         // because the CLI `watch <repo>` override replaces the repos list after load.
         if !toml_repo.is_empty() {
             return Err(HammurabiError::Config(
-                "cannot set both 'repo' and '[[repos]]' in config file; use one or the other".into(),
+                "cannot set both 'repo' and '[[repos]]' in config file; use one or the other"
+                    .into(),
             ));
         }
         repos
@@ -450,7 +445,11 @@ pub fn load() -> Result<Config, HammurabiError> {
         vec![RawRepoEntry {
             repo: Some(legacy_repo),
             tracking_label: None,
-            approvers: if global_approvers.is_empty() { None } else { Some(global_approvers.clone()) },
+            approvers: if global_approvers.is_empty() {
+                None
+            } else {
+                Some(global_approvers.clone())
+            },
             ai_model: None,
             ai_max_turns: None,
             ai_effort: None,
@@ -582,10 +581,8 @@ mod tests {
             toml::from_str(toml_str).map_err(|e| HammurabiError::Config(e.to_string()))?;
 
         // Simplified parser for tests — uses Token auth, no env overrides
-        let github_auth = GitHubAuth::Token(
-            raw.github_token
-                .unwrap_or_else(|| "test-token".to_string()),
-        );
+        let github_auth =
+            GitHubAuth::Token(raw.github_token.unwrap_or_else(|| "test-token".to_string()));
 
         let global_tracking_label = raw
             .tracking_label
@@ -612,7 +609,11 @@ mod tests {
             vec![RawRepoEntry {
                 repo: Some(legacy_repo),
                 tracking_label: None,
-                approvers: if global_approvers.is_empty() { None } else { Some(global_approvers.clone()) },
+                approvers: if global_approvers.is_empty() {
+                    None
+                } else {
+                    Some(global_approvers.clone())
+                },
                 ..Default::default()
             }]
         } else {
@@ -626,7 +627,8 @@ mod tests {
                 if let Some(ref repo) = entry.repo {
                     if !seen.insert(repo.clone()) {
                         return Err(HammurabiError::Config(format!(
-                            "duplicate [[repos]] entry: {}", repo
+                            "duplicate [[repos]] entry: {}",
+                            repo
                         )));
                     }
                 }
@@ -637,16 +639,24 @@ mod tests {
         for entry in &raw_repo_entries {
             let repo = entry.repo.as_deref().unwrap_or("");
             if repo.is_empty() {
-                return Err(HammurabiError::Config("repo is required in each [[repos]] entry".into()));
+                return Err(HammurabiError::Config(
+                    "repo is required in each [[repos]] entry".into(),
+                ));
             }
             let (owner, repo_name) = parse_owner_repo(repo)?;
 
-            let approvers = entry.approvers.clone().unwrap_or_else(|| global_approvers.clone());
+            let approvers = entry
+                .approvers
+                .clone()
+                .unwrap_or_else(|| global_approvers.clone());
             if approvers.is_empty() {
                 return Err(HammurabiError::Config("approvers required".into()));
             }
 
-            let ai_model = entry.ai_model.clone().unwrap_or_else(|| global_ai_model.clone());
+            let ai_model = entry
+                .ai_model
+                .clone()
+                .unwrap_or_else(|| global_ai_model.clone());
             if ai_model.is_empty() {
                 return Err(HammurabiError::Config("ai_model is required".into()));
             }
@@ -655,20 +665,33 @@ mod tests {
                 repo: repo.to_string(),
                 owner,
                 repo_name,
-                tracking_label: entry.tracking_label.clone().unwrap_or_else(|| global_tracking_label.clone()),
+                tracking_label: entry
+                    .tracking_label
+                    .clone()
+                    .unwrap_or_else(|| global_tracking_label.clone()),
                 stale_timeout_days: raw.stale_timeout_days.unwrap_or(7),
                 ai_model,
                 ai_max_turns: entry.ai_max_turns.unwrap_or(global_ai_max_turns),
-                ai_effort: entry.ai_effort.clone().unwrap_or_else(|| global_ai_effort.clone()),
+                ai_effort: entry
+                    .ai_effort
+                    .clone()
+                    .unwrap_or_else(|| global_ai_effort.clone()),
                 ai_timeout_secs: entry.ai_timeout_secs.unwrap_or(global_ai_timeout_secs),
-                ai_stall_timeout_secs: entry.ai_stall_timeout_secs.unwrap_or(global_ai_stall_timeout_secs),
+                ai_stall_timeout_secs: entry
+                    .ai_stall_timeout_secs
+                    .unwrap_or(global_ai_stall_timeout_secs),
                 ai_max_retries: entry.ai_max_retries.unwrap_or(global_ai_max_retries),
-                max_concurrent_agents: entry.max_concurrent_agents.unwrap_or(global_max_concurrent_agents),
+                max_concurrent_agents: entry
+                    .max_concurrent_agents
+                    .unwrap_or(global_max_concurrent_agents),
                 approvers,
                 bypass_label: raw.bypass_label.clone(),
                 hooks: entry.hooks.clone().unwrap_or_else(|| global_hooks.clone()),
                 review: entry.review.clone().or_else(|| global_review.clone()),
-                review_max_iterations: entry.review_max_iterations.unwrap_or(global_review_max_iterations).max(1),
+                review_max_iterations: entry
+                    .review_max_iterations
+                    .unwrap_or(global_review_max_iterations)
+                    .max(1),
                 spec: entry.spec.clone().or_else(|| global_spec.clone()),
                 implement: entry.implement.clone().or_else(|| global_implement.clone()),
             });
@@ -986,6 +1009,9 @@ mod tests {
             bypass_label = "hammurabi-bypass"
         "#;
         let config = parse_raw(toml).unwrap();
-        assert_eq!(config.repos[0].bypass_label.as_deref(), Some("hammurabi-bypass"));
+        assert_eq!(
+            config.repos[0].bypass_label.as_deref(),
+            Some("hammurabi-bypass")
+        );
     }
 }

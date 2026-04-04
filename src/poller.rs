@@ -7,6 +7,7 @@ use tokio::task::JoinSet;
 
 use crate::approval::{self, CommentApprovalResult, PrApprovalResult};
 use crate::claude::ClaudeCliAgent;
+use crate::config::{self, GitHubAuth};
 use crate::config::{Config, RepoConfig};
 use crate::db::Database;
 use crate::error::HammurabiError;
@@ -14,8 +15,9 @@ use crate::github::{GitHubClient, OctocrabClient};
 use crate::lock::LockFile;
 use crate::models::{IssueState, TrackedIssue};
 use crate::transitions::{self, TransitionContext};
-use crate::config::{self, GitHubAuth};
-use crate::worktree::{AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager};
+use crate::worktree::{
+    AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager,
+};
 
 /// Per-repo runtime context (GitHub client + worktree manager).
 struct RepoRuntime {
@@ -58,7 +60,8 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
             config.api_retry_count,
             &repos_dir,
             token_provider.clone(),
-        ).await?;
+        )
+        .await?;
         cached_runtimes.insert(repo_config.repo.clone(), runtime);
     }
 
@@ -158,7 +161,9 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
                     current_config.api_retry_count,
                     &repos_dir,
                     tp,
-                ).await {
+                )
+                .await
+                {
                     Ok(runtime) => {
                         cached_runtimes.insert(repo_config.repo.clone(), runtime);
                     }
@@ -208,7 +213,11 @@ fn auth_fingerprint(auth: &GitHubAuth) -> String {
             token.hash(&mut hasher);
             format!("token:{:x}", hasher.finish())
         }
-        GitHubAuth::App { app_id, installation_id, .. } => {
+        GitHubAuth::App {
+            app_id,
+            installation_id,
+            ..
+        } => {
             format!("app:{}:{}", app_id, installation_id)
         }
     }
@@ -227,15 +236,14 @@ fn build_token_provider(
             let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem)
                 .map_err(|e| HammurabiError::Config(format!("invalid PEM key: {}", e)))?;
             let app_crab = octocrab::Octocrab::builder()
-                .app(
-                    octocrab::models::AppId(*app_id),
-                    key,
-                )
+                .app(octocrab::models::AppId(*app_id), key)
                 .build()
-                .map_err(|e| HammurabiError::GitHub(format!(
-                    "failed to create App client for token provider: {}",
-                    e
-                )))?;
+                .map_err(|e| {
+                    HammurabiError::GitHub(format!(
+                        "failed to create App client for token provider: {}",
+                        e
+                    ))
+                })?;
             Ok(Arc::new(AppTokenProvider::new(
                 app_crab,
                 octocrab::models::InstallationId(*installation_id),
@@ -271,10 +279,7 @@ async fn init_repo_runtime(
     // ensure_bare_clone returns early if the bare clone already exists,
     // and ensure_default_branch returns early if the ref already exists,
     // so this is cheap on subsequent calls.
-    let repo_url = format!(
-        "https://x-access-token@github.com/{}.git",
-        repo_config.repo
-    );
+    let repo_url = format!("https://x-access-token@github.com/{}.git", repo_config.repo);
     worktree_mgr.ensure_bare_clone(&repo_url).await?;
 
     let default_branch = github.get_default_branch().await?;
@@ -345,7 +350,8 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                 .await
             {
                 Ok(Some(ref adder)) if ctx.config.approvers.contains(adder) => {
-                    ctx.db.insert_issue(repo, gh_issue.number, &gh_issue.title)?;
+                    ctx.db
+                        .insert_issue(repo, gh_issue.number, &gh_issue.title)?;
                     tracing::info!(
                         repo = %repo,
                         issue = gh_issue.number,
@@ -357,7 +363,9 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                     if let Some(ref bypass_label) = ctx.config.bypass_label {
                         if gh_issue.labels.contains(bypass_label) {
                             if ctx.config.approvers.contains(&gh_issue.user_login) {
-                                if let Some(tracked) = ctx.db.get_issue(&ctx.config.repo, gh_issue.number)? {
+                                if let Some(tracked) =
+                                    ctx.db.get_issue(&ctx.config.repo, gh_issue.number)?
+                                {
                                     ctx.db.set_issue_bypass(tracked.id, true)?;
                                     tracing::info!(
                                         issue = gh_issue.number,
@@ -413,9 +421,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
         .filter(|i| i.state != IssueState::Done)
         .collect();
 
-    let semaphore = Arc::new(Semaphore::new(
-        ctx.config.max_concurrent_agents as usize,
-    ));
+    let semaphore = Arc::new(Semaphore::new(ctx.config.max_concurrent_agents as usize));
     let mut join_set = JoinSet::new();
 
     for issue in actionable {
@@ -446,7 +452,9 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                 if issue.state.is_active() {
                     let max_retries = ctx.config.ai_max_retries;
                     if issue.retry_count < max_retries {
-                        let new_count = ctx.db.increment_retry_count(issue.id)
+                        let new_count = ctx
+                            .db
+                            .increment_retry_count(issue.id)
                             .unwrap_or(issue.retry_count + 1);
                         tracing::warn!(
                             repo = %repo,
@@ -522,9 +530,7 @@ async fn process_issue(
     }
 
     match issue.state {
-        IssueState::Discovered | IssueState::SpecDrafting => {
-            handle_spec_drafting(ctx, issue).await
-        }
+        IssueState::Discovered | IssueState::SpecDrafting => handle_spec_drafting(ctx, issue).await,
         IssueState::AwaitSpecApproval => handle_await_spec_approval(ctx, issue).await,
         IssueState::Implementing => handle_implementing(ctx, issue).await,
         IssueState::Reviewing => handle_reviewing(ctx, issue).await,
@@ -578,8 +584,7 @@ async fn handle_await_spec_approval(
     .await?
     {
         CommentApprovalResult::Approved { comment_id } => {
-            ctx.db
-                .update_issue_last_comment(issue.id, comment_id)?;
+            ctx.db.update_issue_last_comment(issue.id, comment_id)?;
             ctx.db.update_issue_state(
                 issue.id,
                 IssueState::Implementing,
@@ -595,8 +600,7 @@ async fn handle_await_spec_approval(
             transitions::implementing::execute(ctx, &updated, None).await?;
         }
         CommentApprovalResult::Feedback { body, comment_id } => {
-            ctx.db
-                .update_issue_last_comment(issue.id, comment_id)?;
+            ctx.db.update_issue_last_comment(issue.id, comment_id)?;
             ctx.db.update_issue_state(
                 issue.id,
                 IssueState::SpecDrafting,
@@ -676,7 +680,12 @@ async fn handle_await_pr_approval(
                     )
                     .await?;
                 let updated = ctx.db.get_issue(repo, issue.github_issue_number)?.unwrap();
-                transitions::implementing::execute(ctx, &updated, updated.review_feedback.as_deref()).await?;
+                transitions::implementing::execute(
+                    ctx,
+                    &updated,
+                    updated.review_feedback.as_deref(),
+                )
+                .await?;
             }
             CommentApprovalResult::Approved { comment_id } => {
                 // /approve on a PR is not meaningful — merge is the real approval.
@@ -706,11 +715,9 @@ async fn handle_failed(
     )
     .await?
     {
-        ctx.db
-            .update_issue_last_comment(issue.id, comment_id)?;
+        ctx.db.update_issue_last_comment(issue.id, comment_id)?;
         if let Some(prev) = issue.previous_state {
-            ctx.db
-                .update_issue_state(issue.id, prev, None)?;
+            ctx.db.update_issue_state(issue.id, prev, None)?;
             ctx.db.reset_retry_count(issue.id)?;
             ctx.github
                 .post_issue_comment(
@@ -723,12 +730,11 @@ async fn handle_failed(
     Ok(())
 }
 
-async fn check_stale(
-    ctx: &TransitionContext,
-    issue: &TrackedIssue,
-) -> Result<(), HammurabiError> {
+async fn check_stale(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<(), HammurabiError> {
     // Parse updated_at and check if stale
-    if let Ok(updated) = chrono::NaiveDateTime::parse_from_str(&issue.updated_at, "%Y-%m-%d %H:%M:%S") {
+    if let Ok(updated) =
+        chrono::NaiveDateTime::parse_from_str(&issue.updated_at, "%Y-%m-%d %H:%M:%S")
+    {
         let now = chrono::Utc::now().naive_utc();
         let days_since = (now - updated).num_days();
         if days_since >= ctx.config.stale_timeout_days as i64 {
@@ -827,10 +833,7 @@ mod tests {
     use crate::transitions::TransitionContext;
     use crate::worktree::mock::MockWorktreeManager;
 
-    fn build_ctx(
-        gh: Arc<MockGitHubClient>,
-        db: Arc<Database>,
-    ) -> TransitionContext {
+    fn build_ctx(gh: Arc<MockGitHubClient>, db: Arc<Database>) -> TransitionContext {
         TransitionContext {
             github: gh,
             ai: Arc::new(MockAiAgent::new()),
@@ -958,8 +961,17 @@ mod tests {
         let ctx = build_ctx(gh, db.clone());
         reconcile_closed_issues(&ctx).await.unwrap();
 
-        assert_eq!(db.get_issue("owner/repo", 1).unwrap().unwrap().state, IssueState::Done);
-        assert_eq!(db.get_issue("owner/repo", 2).unwrap().unwrap().state, IssueState::SpecDrafting);
-        assert_eq!(db.get_issue("owner/repo", 3).unwrap().unwrap().state, IssueState::Done);
+        assert_eq!(
+            db.get_issue("owner/repo", 1).unwrap().unwrap().state,
+            IssueState::Done
+        );
+        assert_eq!(
+            db.get_issue("owner/repo", 2).unwrap().unwrap().state,
+            IssueState::SpecDrafting
+        );
+        assert_eq!(
+            db.get_issue("owner/repo", 3).unwrap().unwrap().state,
+            IssueState::Done
+        );
     }
 }

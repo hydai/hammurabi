@@ -88,7 +88,12 @@ async fn main() -> anyhow::Result<()> {
             }
 
             tracing::info!(
-                repos = config.repos.iter().map(|r| r.repo.as_str()).collect::<Vec<_>>().join(", "),
+                repos = config
+                    .repos
+                    .iter()
+                    .map(|r| r.repo.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 "Monitoring repositories"
             );
 
@@ -177,7 +182,10 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let prev = issue.previous_state.ok_or_else(|| {
-                anyhow::anyhow!("issue #{} has no previous state to retry from", issue_number)
+                anyhow::anyhow!(
+                    "issue #{} has no previous state to retry from",
+                    issue_number
+                )
             })?;
 
             db.update_issue_state(issue.id, prev, None)?;

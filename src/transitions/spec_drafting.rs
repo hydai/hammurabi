@@ -51,10 +51,12 @@ pub async fn execute(
 
     // Read spec content from worktree (AI writes SPEC.md there)
     let spec_path = lifecycle.worktree_path.join("SPEC.md");
-    let spec_content = tokio::fs::read_to_string(&spec_path).await.unwrap_or_else(|_| {
-        // Fallback: use AI output directly if no SPEC.md was written
-        lifecycle.ai_result.content.clone()
-    });
+    let spec_content = tokio::fs::read_to_string(&spec_path)
+        .await
+        .unwrap_or_else(|_| {
+            // Fallback: use AI output directly if no SPEC.md was written
+            lifecycle.ai_result.content.clone()
+        });
 
     // Clean up worktree
     let hook_timeout = hooks::hooks_timeout(&ctx.config.hooks);
@@ -84,8 +86,7 @@ pub async fn execute(
         Some(IssueState::SpecDrafting),
     )?;
     ctx.db.update_issue_spec_comment(issue.id, comment_id)?;
-    ctx.db
-        .update_issue_spec_content(issue.id, &spec_content)?;
+    ctx.db.update_issue_spec_content(issue.id, &spec_content)?;
     ctx.db.update_issue_last_comment(issue.id, comment_id)?;
     ctx.db.update_issue_worktree(issue.id, None)?;
 

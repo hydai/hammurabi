@@ -70,9 +70,10 @@ impl AiAgent for ClaudeCliAgent {
             .spawn()
             .map_err(|e| HammurabiError::Ai(format!("failed to spawn claude: {}", e)))?;
 
-        let stdout = child.stdout.take().ok_or_else(|| {
-            HammurabiError::Ai("failed to capture stdout".to_string())
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| HammurabiError::Ai("failed to capture stdout".to_string()))?;
 
         let overall_deadline = Instant::now() + Duration::from_secs(invocation.timeout_secs);
         let stall_enabled = invocation.stall_timeout_secs > 0;
@@ -109,7 +110,8 @@ impl AiAgent for ClaudeCliAgent {
                 Ok(Err(e)) => {
                     let _ = child.kill().await;
                     return Err(HammurabiError::Ai(format!(
-                        "error reading claude output: {}", e
+                        "error reading claude output: {}",
+                        e
                     )));
                 }
                 Err(_) => {
@@ -130,7 +132,9 @@ impl AiAgent for ClaudeCliAgent {
             }
         }
 
-        let status = child.wait().await
+        let status = child
+            .wait()
+            .await
             .map_err(|e| HammurabiError::Ai(format!("failed to wait for claude: {}", e)))?;
 
         if !status.success() {
@@ -174,10 +178,7 @@ pub fn parse_stream_json(output: &str) -> Result<AiResult, HammurabiError> {
         };
 
         // Extract session ID from message_start or result
-        if let Some(sid) = parsed
-            .get("session_id")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(sid) = parsed.get("session_id").and_then(|v| v.as_str()) {
             session_id = Some(sid.to_string());
         }
 
@@ -292,7 +293,9 @@ pub mod mock {
                 return Ok(result.clone());
             }
 
-            Err(HammurabiError::Ai("no mock response configured".to_string()))
+            Err(HammurabiError::Ai(
+                "no mock response configured".to_string(),
+            ))
         }
     }
 }

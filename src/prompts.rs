@@ -14,11 +14,7 @@ fn wrap_untrusted(label: &str, content: &str) -> String {
 // Architect Agent (Spec Drafting)
 // ---------------------------------------------------------------------------
 
-pub fn spec_drafting_prompt(
-    issue_title: &str,
-    issue_body: &str,
-    feedback: Option<&str>,
-) -> String {
+pub fn spec_drafting_prompt(issue_title: &str, issue_body: &str, feedback: Option<&str>) -> String {
     let title = wrap_untrusted("issue-title", issue_title);
     let body = wrap_untrusted("issue-body", issue_body);
     let mut prompt = format!(
@@ -536,11 +532,7 @@ For each success criterion in the spec:
     )
 }
 
-pub fn claude_md_for_review(
-    issue_title: &str,
-    issue_body: &str,
-    spec_content: &str,
-) -> String {
+pub fn claude_md_for_review(issue_title: &str, issue_body: &str, spec_content: &str) -> String {
     let title = wrap_untrusted("issue-title", issue_title);
     let body = wrap_untrusted("issue-body", issue_body);
     let spec = wrap_untrusted("spec", spec_content);
@@ -666,8 +658,7 @@ pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
     /// Check if the character after a keyword match is a valid token boundary
     /// (not a letter/digit, meaning PASS/FAIL is a standalone token).
     fn has_token_boundary(text: &str, keyword_len: usize) -> bool {
-        text.len() == keyword_len
-            || !text.as_bytes()[keyword_len].is_ascii_alphanumeric()
+        text.len() == keyword_len || !text.as_bytes()[keyword_len].is_ascii_alphanumeric()
     }
 
     /// Check if `keyword` appears as a standalone token anywhere in `text`
@@ -715,9 +706,7 @@ pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
         {
             return Some(ReviewVerdict::Fail);
         }
-        if contains_token(upper, "PASS")
-            && (upper.contains("VERDICT") || upper.contains("READY"))
-        {
+        if contains_token(upper, "PASS") && (upper.contains("VERDICT") || upper.contains("READY")) {
             return Some(ReviewVerdict::Pass);
         }
         None
@@ -729,9 +718,13 @@ pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         let verdict_candidate = if let Some(rest) = trimmed.strip_prefix("## Verdict") {
-            rest.trim_start().trim_start_matches([':', '-']).trim_start()
+            rest.trim_start()
+                .trim_start_matches([':', '-'])
+                .trim_start()
         } else if let Some(rest) = trimmed.strip_prefix("## Review Summary") {
-            rest.trim_start().trim_start_matches([':', '-']).trim_start()
+            rest.trim_start()
+                .trim_start_matches([':', '-'])
+                .trim_start()
         } else {
             trimmed
         };
@@ -749,7 +742,10 @@ pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("## Verdict") {
-            let rest = rest.trim_start().trim_start_matches([':', '-']).trim_start();
+            let rest = rest
+                .trim_start()
+                .trim_start_matches([':', '-'])
+                .trim_start();
             if !rest.is_empty() {
                 if let Some(result) = parse_verdict_line(rest) {
                     return result;
@@ -774,7 +770,10 @@ pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("## Review Summary") {
-            let rest = rest.trim_start().trim_start_matches([':', '-']).trim_start();
+            let rest = rest
+                .trim_start()
+                .trim_start_matches([':', '-'])
+                .trim_start();
             if !rest.is_empty() {
                 if let Some(result) = parse_verdict_line(rest) {
                     return result;

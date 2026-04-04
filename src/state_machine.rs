@@ -76,9 +76,7 @@ pub fn transition(
             Ok(vec![SideEffect::ExecuteImplementation])
         }
 
-        (IssueState::Reviewing, Event::PollCycleActive) => {
-            Ok(vec![SideEffect::ExecuteReview])
-        }
+        (IssueState::Reviewing, Event::PollCycleActive) => Ok(vec![SideEffect::ExecuteReview]),
 
         // --- Spec approval (comment-based) ---
         (IssueState::AwaitSpecApproval, Event::SpecApproved) => Ok(vec![
@@ -237,8 +235,7 @@ mod tests {
 
     #[test]
     fn test_await_spec_approved() {
-        let effects =
-            transition(IssueState::AwaitSpecApproval, Event::SpecApproved, None).unwrap();
+        let effects = transition(IssueState::AwaitSpecApproval, Event::SpecApproved, None).unwrap();
         assert!(effects.contains(&SideEffect::UpdateState {
             new_state: IssueState::Implementing,
             previous_state: Some(IssueState::AwaitSpecApproval),
@@ -267,8 +264,7 @@ mod tests {
 
     #[test]
     fn test_pr_merged() {
-        let effects =
-            transition(IssueState::AwaitPRApproval, Event::PrMerged, None).unwrap();
+        let effects = transition(IssueState::AwaitPRApproval, Event::PrMerged, None).unwrap();
         assert!(effects.contains(&SideEffect::UpdateState {
             new_state: IssueState::Done,
             previous_state: Some(IssueState::AwaitPRApproval),

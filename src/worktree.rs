@@ -44,7 +44,10 @@ pub struct AppTokenProvider {
 }
 
 impl AppTokenProvider {
-    pub fn new(app_client: octocrab::Octocrab, installation_id: octocrab::models::InstallationId) -> Self {
+    pub fn new(
+        app_client: octocrab::Octocrab,
+        installation_id: octocrab::models::InstallationId,
+    ) -> Self {
         Self {
             app_client,
             installation_id,
@@ -86,7 +89,12 @@ pub trait WorktreeManager: Send + Sync {
     ) -> Result<bool, HammurabiError>;
     async fn push_branch(&self, branch_name: &str) -> Result<(), HammurabiError>;
     async fn delete_remote_branch(&self, branch_name: &str) -> Result<(), HammurabiError>;
-    async fn seed_file(&self, worktree_path: &Path, filename: &str, content: &str) -> Result<(), HammurabiError>;
+    async fn seed_file(
+        &self,
+        worktree_path: &Path,
+        filename: &str,
+        content: &str,
+    ) -> Result<(), HammurabiError>;
 }
 
 pub struct GitWorktreeManager {
@@ -125,11 +133,7 @@ impl GitWorktreeManager {
         format!("{}-{}", issue_number, task_name)
     }
 
-    async fn run_git(
-        &self,
-        args: &[&str],
-        cwd: &Path,
-    ) -> Result<String, HammurabiError> {
+    async fn run_git(&self, args: &[&str], cwd: &Path) -> Result<String, HammurabiError> {
         let output = tokio::process::Command::new("git")
             .args(args)
             .current_dir(cwd)
@@ -215,27 +219,25 @@ impl WorktreeManager for GitWorktreeManager {
             return Ok(self.bare_clone_path.clone());
         }
 
-        self.run_git_authenticated(
-            &["clone", "--bare", repo_url, "repo"],
-            &self.base_dir,
-        )
-        .await?;
+        self.run_git_authenticated(&["clone", "--bare", repo_url, "repo"], &self.base_dir)
+            .await?;
 
         // Bare clones default to refspec +refs/heads/*:refs/heads/*, so
         // "origin/main" doesn't resolve.  Reconfigure to the standard
         // remote-tracking layout and fetch so create_worktree can use
         // origin/<branch> as the start point.
         self.run_git(
-            &["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
             &self.bare_clone_path,
         )
         .await?;
 
-        self.run_git_authenticated(
-            &["fetch", "origin"],
-            &self.bare_clone_path,
-        )
-        .await?;
+        self.run_git_authenticated(&["fetch", "origin"], &self.bare_clone_path)
+            .await?;
 
         Ok(self.bare_clone_path.clone())
     }
@@ -243,7 +245,10 @@ impl WorktreeManager for GitWorktreeManager {
     async fn ensure_default_branch(&self, default_branch: &str) -> Result<(), HammurabiError> {
         let remote_ref = format!("origin/{}", default_branch);
         let exists = self
-            .run_git(&["rev-parse", "--verify", &remote_ref], &self.bare_clone_path)
+            .run_git(
+                &["rev-parse", "--verify", &remote_ref],
+                &self.bare_clone_path,
+            )
             .await;
 
         if exists.is_ok() {
@@ -265,10 +270,7 @@ impl WorktreeManager for GitWorktreeManager {
         if init_path.exists() {
             if let Ok(s) = path_to_str(&init_path) {
                 let _ = self
-                    .run_git(
-                        &["worktree", "remove", "--force", s],
-                        &self.bare_clone_path,
-                    )
+                    .run_git(&["worktree", "remove", "--force", s], &self.bare_clone_path)
                     .await;
             }
             if init_path.exists() {
@@ -281,44 +283,37 @@ impl WorktreeManager for GitWorktreeManager {
 
         // Create orphan worktree
         self.run_git(
-            &[
-                "worktree", "add", "--detach",
-                path_to_str(&init_path)?,
-            ],
+            &["worktree", "add", "--detach", path_to_str(&init_path)?],
             &self.bare_clone_path,
         )
         .await?;
 
         // Create orphan branch with initial commit
-        self.run_git(
-            &["checkout", "--orphan", default_branch],
-            &init_path,
-        )
-        .await?;
+        self.run_git(&["checkout", "--orphan", default_branch], &init_path)
+            .await?;
 
         self.run_git(
             &[
-                "-c", "user.name=Hammurabi",
-                "-c", "user.email=hammurabi@noreply",
-                "commit", "--allow-empty", "-m", "chore: initial commit",
+                "-c",
+                "user.name=Hammurabi",
+                "-c",
+                "user.email=hammurabi@noreply",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "chore: initial commit",
             ],
             &init_path,
         )
         .await?;
 
-        self.run_git_authenticated(
-            &["push", "origin", default_branch],
-            &init_path,
-        )
-        .await?;
+        self.run_git_authenticated(&["push", "origin", default_branch], &init_path)
+            .await?;
 
         // Clean up
         if let Ok(s) = path_to_str(&init_path) {
             let _ = self
-                .run_git(
-                    &["worktree", "remove", "--force", s],
-                    &self.bare_clone_path,
-                )
+                .run_git(&["worktree", "remove", "--force", s], &self.bare_clone_path)
                 .await;
         }
         let _ = self
@@ -326,21 +321,15 @@ impl WorktreeManager for GitWorktreeManager {
             .await;
 
         // Fetch so origin/<default_branch> is available
-        self.run_git_authenticated(
-            &["fetch", "origin"],
-            &self.bare_clone_path,
-        )
-        .await?;
+        self.run_git_authenticated(&["fetch", "origin"], &self.bare_clone_path)
+            .await?;
 
         Ok(())
     }
 
     async fn fetch_origin(&self) -> Result<(), HammurabiError> {
-        self.run_git_authenticated(
-            &["fetch", "origin", "--prune"],
-            &self.bare_clone_path,
-        )
-        .await?;
+        self.run_git_authenticated(&["fetch", "origin", "--prune"], &self.bare_clone_path)
+            .await?;
         Ok(())
     }
 
@@ -362,10 +351,7 @@ impl WorktreeManager for GitWorktreeManager {
         if worktree_path.exists() {
             if let Ok(s) = path_to_str(&worktree_path) {
                 let _ = self
-                    .run_git(
-                        &["worktree", "remove", "--force", s],
-                        &self.bare_clone_path,
-                    )
+                    .run_git(&["worktree", "remove", "--force", s], &self.bare_clone_path)
                     .await;
             }
             if worktree_path.exists() {
@@ -407,10 +393,7 @@ impl WorktreeManager for GitWorktreeManager {
 
         if let Ok(s) = path_to_str(path) {
             let _ = self
-                .run_git(
-                    &["worktree", "remove", "--force", s],
-                    &self.bare_clone_path,
-                )
+                .run_git(&["worktree", "remove", "--force", s], &self.bare_clone_path)
                 .await;
         }
 
@@ -441,9 +424,13 @@ impl WorktreeManager for GitWorktreeManager {
         let result = self
             .run_git(
                 &[
-                    "-c", "user.name=Hammurabi",
-                    "-c", "user.email=hammurabi@noreply",
-                    "commit", "-m", message,
+                    "-c",
+                    "user.name=Hammurabi",
+                    "-c",
+                    "user.email=hammurabi@noreply",
+                    "commit",
+                    "-m",
+                    message,
                 ],
                 worktree_path,
             )
@@ -466,21 +453,15 @@ impl WorktreeManager for GitWorktreeManager {
         // Delete remote branch first if it exists (daemon-managed branches)
         let _ = self.delete_remote_branch(branch_name).await;
 
-        self.run_git_authenticated(
-            &["push", "origin", branch_name],
-            &self.bare_clone_path,
-        )
-        .await?;
+        self.run_git_authenticated(&["push", "origin", branch_name], &self.bare_clone_path)
+            .await?;
         Ok(())
     }
 
     async fn delete_remote_branch(&self, branch_name: &str) -> Result<(), HammurabiError> {
         let delete_ref = format!(":{}", branch_name);
         let _ = self
-            .run_git_authenticated(
-                &["push", "origin", &delete_ref],
-                &self.bare_clone_path,
-            )
+            .run_git_authenticated(&["push", "origin", &delete_ref], &self.bare_clone_path)
             .await;
         Ok(())
     }
@@ -616,22 +597,13 @@ mod tests {
 
     #[test]
     fn test_branch_naming() {
-        assert_eq!(
-            branch_name(42, "spec"),
-            "hammurabi/42-spec"
-        );
-        assert_eq!(
-            branch_name(42, "sub1"),
-            "hammurabi/42-sub1"
-        );
+        assert_eq!(branch_name(42, "spec"), "hammurabi/42-spec");
+        assert_eq!(branch_name(42, "sub1"), "hammurabi/42-sub1");
     }
 
     #[test]
     fn test_worktree_dir_naming() {
-        assert_eq!(
-            GitWorktreeManager::worktree_dir_name(42, "spec"),
-            "42-spec"
-        );
+        assert_eq!(GitWorktreeManager::worktree_dir_name(42, "spec"), "42-spec");
     }
 
     #[test]
@@ -641,8 +613,14 @@ mod tests {
             Arc::new(StaticTokenProvider::new("token".to_string())),
         );
         assert!(mgr.base_dir.is_absolute(), "base_dir should be absolute");
-        assert!(mgr.bare_clone_path.is_absolute(), "bare_clone_path should be absolute");
-        assert!(mgr.worktrees_dir.is_absolute(), "worktrees_dir should be absolute");
+        assert!(
+            mgr.bare_clone_path.is_absolute(),
+            "bare_clone_path should be absolute"
+        );
+        assert!(
+            mgr.worktrees_dir.is_absolute(),
+            "worktrees_dir should be absolute"
+        );
         assert!(mgr.base_dir.ends_with(".hammurabi"));
         assert!(mgr.bare_clone_path.ends_with(".hammurabi/repo"));
         assert!(mgr.worktrees_dir.ends_with(".hammurabi/worktrees"));
@@ -655,8 +633,14 @@ mod tests {
             Arc::new(StaticTokenProvider::new("token".to_string())),
         );
         assert_eq!(mgr.base_dir, PathBuf::from("/tmp/hammurabi-test"));
-        assert_eq!(mgr.bare_clone_path, PathBuf::from("/tmp/hammurabi-test/repo"));
-        assert_eq!(mgr.worktrees_dir, PathBuf::from("/tmp/hammurabi-test/worktrees"));
+        assert_eq!(
+            mgr.bare_clone_path,
+            PathBuf::from("/tmp/hammurabi-test/repo")
+        );
+        assert_eq!(
+            mgr.worktrees_dir,
+            PathBuf::from("/tmp/hammurabi-test/worktrees")
+        );
     }
 
     /// Creates a temp git repo with one commit, returning its path.
@@ -669,12 +653,18 @@ mod tests {
         tokio::process::Command::new("git")
             .args(["init", "-b", "main"])
             .current_dir(&tmp)
-            .output().await.unwrap();
-        tokio::fs::write(tmp.join("README.md"), "# test").await.unwrap();
+            .output()
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.join("README.md"), "# test")
+            .await
+            .unwrap();
         tokio::process::Command::new("git")
             .args(["add", "."])
             .current_dir(&tmp)
-            .output().await.unwrap();
+            .output()
+            .await
+            .unwrap();
         tokio::process::Command::new("git")
             .args(["commit", "-m", "init"])
             .current_dir(&tmp)
@@ -682,7 +672,9 @@ mod tests {
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "test")
             .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .output().await.unwrap();
+            .output()
+            .await
+            .unwrap();
 
         tmp
     }
@@ -693,7 +685,10 @@ mod tests {
         let base = std::env::temp_dir().join("hammurabi-test-base-clone");
         let _ = tokio::fs::remove_dir_all(&base).await;
 
-        let mgr = GitWorktreeManager::new(base.clone(), Arc::new(StaticTokenProvider::new("unused".to_string())));
+        let mgr = GitWorktreeManager::new(
+            base.clone(),
+            Arc::new(StaticTokenProvider::new("unused".to_string())),
+        );
         let clone_path = mgr
             .ensure_bare_clone(origin.to_str().unwrap())
             .await
@@ -701,8 +696,14 @@ mod tests {
 
         // Clone should be at <base>/repo, not nested
         assert_eq!(clone_path, base.join("repo"));
-        assert!(base.join("repo").exists(), "repo dir should exist at base/repo");
-        assert!(base.join("repo/HEAD").exists(), "should be a valid bare git repo");
+        assert!(
+            base.join("repo").exists(),
+            "repo dir should exist at base/repo"
+        );
+        assert!(
+            base.join("repo/HEAD").exists(),
+            "should be a valid bare git repo"
+        );
         assert!(
             !base.join("repo/.hammurabi").exists(),
             "should NOT have nested .hammurabi inside repo"
@@ -718,14 +719,21 @@ mod tests {
         let base = std::env::temp_dir().join("hammurabi-test-base-refs");
         let _ = tokio::fs::remove_dir_all(&base).await;
 
-        let mgr = GitWorktreeManager::new(base.clone(), Arc::new(StaticTokenProvider::new("unused".to_string())));
-        mgr.ensure_bare_clone(origin.to_str().unwrap()).await.unwrap();
+        let mgr = GitWorktreeManager::new(
+            base.clone(),
+            Arc::new(StaticTokenProvider::new("unused".to_string())),
+        );
+        mgr.ensure_bare_clone(origin.to_str().unwrap())
+            .await
+            .unwrap();
 
         // origin/main should resolve after the refspec reconfiguration
         let output = tokio::process::Command::new("git")
             .args(["rev-parse", "--verify", "origin/main"])
             .current_dir(base.join("repo"))
-            .output().await.unwrap();
+            .output()
+            .await
+            .unwrap();
         assert!(
             output.status.success(),
             "origin/main should resolve in bare clone; stderr: {}",
@@ -742,8 +750,13 @@ mod tests {
         let base = std::env::temp_dir().join("hammurabi-test-base-wt");
         let _ = tokio::fs::remove_dir_all(&base).await;
 
-        let mgr = GitWorktreeManager::new(base.clone(), Arc::new(StaticTokenProvider::new("unused".to_string())));
-        mgr.ensure_bare_clone(origin.to_str().unwrap()).await.unwrap();
+        let mgr = GitWorktreeManager::new(
+            base.clone(),
+            Arc::new(StaticTokenProvider::new("unused".to_string())),
+        );
+        mgr.ensure_bare_clone(origin.to_str().unwrap())
+            .await
+            .unwrap();
 
         let wt_path = mgr.create_worktree(7, "spec", "main").await.unwrap();
 
@@ -756,8 +769,12 @@ mod tests {
         );
 
         // Seeding a file should succeed
-        mgr.seed_file(&wt_path, "CLAUDE.md", "# Test context").await.unwrap();
-        let content = tokio::fs::read_to_string(wt_path.join("CLAUDE.md")).await.unwrap();
+        mgr.seed_file(&wt_path, "CLAUDE.md", "# Test context")
+            .await
+            .unwrap();
+        let content = tokio::fs::read_to_string(wt_path.join("CLAUDE.md"))
+            .await
+            .unwrap();
         assert_eq!(content, "# Test context");
 
         let _ = tokio::fs::remove_dir_all(&base).await;
@@ -788,7 +805,9 @@ mod tests {
         let mgr = mock::MockWorktreeManager::new(tmp.clone());
 
         let path = mgr.create_worktree(1, "spec", "main").await.unwrap();
-        mgr.seed_file(&path, "CLAUDE.md", "# Context\nTest").await.unwrap();
+        mgr.seed_file(&path, "CLAUDE.md", "# Context\nTest")
+            .await
+            .unwrap();
 
         let content = tokio::fs::read_to_string(path.join("CLAUDE.md"))
             .await

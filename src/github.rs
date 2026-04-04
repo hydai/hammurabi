@@ -49,11 +49,7 @@ pub trait GitHubClient: Send + Sync {
         number: u64,
         since_id: Option<u64>,
     ) -> Result<Vec<GitHubComment>, HammurabiError>;
-    async fn post_issue_comment(
-        &self,
-        number: u64,
-        body: &str,
-    ) -> Result<u64, HammurabiError>;
+    async fn post_issue_comment(&self, number: u64, body: &str) -> Result<u64, HammurabiError>;
     async fn create_pull_request(
         &self,
         title: &str,
@@ -69,21 +65,14 @@ pub trait GitHubClient: Send + Sync {
         labels: &[String],
     ) -> Result<u64, HammurabiError>;
     async fn get_default_branch(&self) -> Result<String, HammurabiError>;
-    async fn get_file_content(
-        &self,
-        branch: &str,
-        path: &str,
-    ) -> Result<String, HammurabiError>;
+    async fn get_file_content(&self, branch: &str, path: &str) -> Result<String, HammurabiError>;
     async fn is_issue_open(&self, number: u64) -> Result<bool, HammurabiError>;
     async fn get_label_adder(
         &self,
         issue_number: u64,
         label: &str,
     ) -> Result<Option<String>, HammurabiError>;
-    async fn find_pull_request_by_head(
-        &self,
-        head: &str,
-    ) -> Result<Option<u64>, HammurabiError>;
+    async fn find_pull_request_by_head(&self, head: &str) -> Result<Option<u64>, HammurabiError>;
 }
 
 #[derive(Clone)]
@@ -108,15 +97,15 @@ impl OctocrabClient {
         max_retries: u32,
     ) -> Result<Self, HammurabiError> {
         let client = match auth {
-            crate::config::GitHubAuth::Token(token) => {
-                octocrab::Octocrab::builder()
-                    .personal_token(token.to_string())
-                    .build()
-                    .map_err(|e| HammurabiError::GitHub(format!(
+            crate::config::GitHubAuth::Token(token) => octocrab::Octocrab::builder()
+                .personal_token(token.to_string())
+                .build()
+                .map_err(|e| {
+                    HammurabiError::GitHub(format!(
                         "failed to create GitHub client: {}",
                         format_octocrab_error(&e)
-                    )))?
-            }
+                    ))
+                })?,
             crate::config::GitHubAuth::App {
                 app_id,
                 private_key_pem,
@@ -125,21 +114,22 @@ impl OctocrabClient {
                 let key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key_pem)
                     .map_err(|e| HammurabiError::Config(format!("invalid PEM key: {}", e)))?;
                 let app_crab = octocrab::Octocrab::builder()
-                    .app(
-                        octocrab::models::AppId(*app_id),
-                        key,
-                    )
+                    .app(octocrab::models::AppId(*app_id), key)
                     .build()
-                    .map_err(|e| HammurabiError::GitHub(format!(
-                        "failed to create GitHub App client: {}",
-                        format_octocrab_error(&e)
-                    )))?;
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "failed to create GitHub App client: {}",
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
                 app_crab
                     .installation(octocrab::models::InstallationId(*installation_id))
-                    .map_err(|e| HammurabiError::GitHub(format!(
-                        "failed to create installation client: {}",
-                        format_octocrab_error(&e)
-                    )))?
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "failed to create installation client: {}",
+                            format_octocrab_error(&e)
+                        ))
+                    })?
             }
         };
 
@@ -195,7 +185,11 @@ impl GitHubClient for OctocrabClient {
         let label = label.to_string();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             let label = label.clone();
             async move {
                 let page = client
@@ -206,7 +200,12 @@ impl GitHubClient for OctocrabClient {
                     .per_page(100)
                     .send()
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("list issues: {}", format_octocrab_error(&e))))?;
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "list issues: {}",
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
 
                 Ok(page
                     .items
@@ -230,13 +229,23 @@ impl GitHubClient for OctocrabClient {
         let ctx = self.retry_ctx();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             async move {
                 let issue = client
                     .issues(&owner, &repo)
                     .get(number)
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("get issue #{}: {}", number, format_octocrab_error(&e))))?;
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "get issue #{}: {}",
+                            number,
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
 
                 Ok(GitHubIssue {
                     number: issue.number,
@@ -259,7 +268,11 @@ impl GitHubClient for OctocrabClient {
         let ctx = self.retry_ctx();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             async move {
                 let page = client
                     .issues(&owner, &repo)
@@ -268,7 +281,11 @@ impl GitHubClient for OctocrabClient {
                     .send()
                     .await
                     .map_err(|e| {
-                        HammurabiError::GitHub(format!("list comments for #{}: {}", number, format_octocrab_error(&e)))
+                        HammurabiError::GitHub(format!(
+                            "list comments for #{}: {}",
+                            number,
+                            format_octocrab_error(&e)
+                        ))
                     })?;
 
                 let comments: Vec<GitHubComment> = page
@@ -294,16 +311,16 @@ impl GitHubClient for OctocrabClient {
         .await
     }
 
-    async fn post_issue_comment(
-        &self,
-        number: u64,
-        body: &str,
-    ) -> Result<u64, HammurabiError> {
+    async fn post_issue_comment(&self, number: u64, body: &str) -> Result<u64, HammurabiError> {
         let ctx = self.retry_ctx();
         let body = body.to_string();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             let body = body.clone();
             async move {
                 let comment = client
@@ -311,7 +328,11 @@ impl GitHubClient for OctocrabClient {
                     .create_comment(number, body)
                     .await
                     .map_err(|e| {
-                        HammurabiError::GitHub(format!("post comment on #{}: {}", number, format_octocrab_error(&e)))
+                        HammurabiError::GitHub(format!(
+                            "post comment on #{}: {}",
+                            number,
+                            format_octocrab_error(&e)
+                        ))
                     })?;
 
                 Ok(comment.id.into_inner())
@@ -334,7 +355,11 @@ impl GitHubClient for OctocrabClient {
         let body = body.to_string();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             let title = title.clone();
             let head = head.clone();
             let base = base.clone();
@@ -346,7 +371,9 @@ impl GitHubClient for OctocrabClient {
                     .body(&body)
                     .send()
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("create PR: {}", format_octocrab_error(&e))))?;
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!("create PR: {}", format_octocrab_error(&e)))
+                    })?;
 
                 Ok(pr.number)
             }
@@ -358,14 +385,22 @@ impl GitHubClient for OctocrabClient {
         let ctx = self.retry_ctx();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             async move {
                 let pr = client
                     .pulls(&owner, &repo)
                     .get(pr_number)
                     .await
                     .map_err(|e| {
-                        HammurabiError::GitHub(format!("get PR #{}: {}", pr_number, format_octocrab_error(&e)))
+                        HammurabiError::GitHub(format!(
+                            "get PR #{}: {}",
+                            pr_number,
+                            format_octocrab_error(&e)
+                        ))
                     })?;
 
                 if pr.merged_at.is_some() {
@@ -392,7 +427,11 @@ impl GitHubClient for OctocrabClient {
         let labels: Vec<String> = labels.to_vec();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             let title = title.clone();
             let body = body.clone();
             let labels = labels.clone();
@@ -404,7 +443,12 @@ impl GitHubClient for OctocrabClient {
                     .labels(labels)
                     .send()
                     .await
-                    .map_err(|e| HammurabiError::GitHub(format!("create issue: {}", format_octocrab_error(&e))))?;
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "create issue: {}",
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
 
                 Ok(issue.number)
             }
@@ -416,13 +460,15 @@ impl GitHubClient for OctocrabClient {
         let ctx = self.retry_ctx();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             async move {
-                let repo_info = client
-                    .repos(&owner, &repo)
-                    .get()
-                    .await
-                    .map_err(|e| HammurabiError::GitHub(format!("get repo info: {}", format_octocrab_error(&e))))?;
+                let repo_info = client.repos(&owner, &repo).get().await.map_err(|e| {
+                    HammurabiError::GitHub(format!("get repo info: {}", format_octocrab_error(&e)))
+                })?;
 
                 Ok(repo_info
                     .default_branch
@@ -432,17 +478,17 @@ impl GitHubClient for OctocrabClient {
         .await
     }
 
-    async fn get_file_content(
-        &self,
-        branch: &str,
-        path: &str,
-    ) -> Result<String, HammurabiError> {
+    async fn get_file_content(&self, branch: &str, path: &str) -> Result<String, HammurabiError> {
         let ctx = self.retry_ctx();
         let branch = branch.to_string();
         let path = path.to_string();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             let branch = branch.clone();
             let path = path.clone();
             async move {
@@ -454,16 +500,18 @@ impl GitHubClient for OctocrabClient {
                     .send()
                     .await
                     .map_err(|e| {
-                        HammurabiError::GitHub(format!("get file {}: {}", path, format_octocrab_error(&e)))
+                        HammurabiError::GitHub(format!(
+                            "get file {}: {}",
+                            path,
+                            format_octocrab_error(&e)
+                        ))
                     })?;
 
                 match content.items.into_iter().next() {
                     Some(item) => {
-                        let decoded = item
-                            .decoded_content()
-                            .ok_or_else(|| {
-                                HammurabiError::GitHub(format!("failed to decode {}", path))
-                            })?;
+                        let decoded = item.decoded_content().ok_or_else(|| {
+                            HammurabiError::GitHub(format!("failed to decode {}", path))
+                        })?;
                         Ok(decoded)
                     }
                     None => Err(HammurabiError::GitHub(format!("file not found: {}", path))),
@@ -487,17 +535,20 @@ impl GitHubClient for OctocrabClient {
         let label = label.to_string();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             let label = label.clone();
             async move {
                 let route = format!("/repos/{owner}/{repo}/issues/{issue_number}/events");
-                let events: Vec<serde_json::Value> = client
-                    .get(route, None::<&()>)
-                    .await
-                    .map_err(|e| {
+                let events: Vec<serde_json::Value> =
+                    client.get(route, None::<&()>).await.map_err(|e| {
                         HammurabiError::GitHub(format!(
                             "get events for #{}: {}",
-                            issue_number, format_octocrab_error(&e)
+                            issue_number,
+                            format_octocrab_error(&e)
                         ))
                     })?;
 
@@ -508,8 +559,7 @@ impl GitHubClient for OctocrabClient {
                         if let Some(label_obj) = event.get("label") {
                             if label_obj.get("name").and_then(|v| v.as_str()) == Some(&label) {
                                 if let Some(actor) = event.get("actor") {
-                                    if let Some(login) =
-                                        actor.get("login").and_then(|v| v.as_str())
+                                    if let Some(login) = actor.get("login").and_then(|v| v.as_str())
                                     {
                                         adder = Some(login.to_string());
                                     }
@@ -525,15 +575,16 @@ impl GitHubClient for OctocrabClient {
         .await
     }
 
-    async fn find_pull_request_by_head(
-        &self,
-        head: &str,
-    ) -> Result<Option<u64>, HammurabiError> {
+    async fn find_pull_request_by_head(&self, head: &str) -> Result<Option<u64>, HammurabiError> {
         let ctx = self.retry_ctx();
         let head = head.to_string();
 
         self.retry(|| {
-            let RetryCtx { client, owner, repo } = ctx.clone();
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
             let head = head.clone();
             async move {
                 let full_head = format!("{owner}:{head}");
@@ -634,10 +685,7 @@ pub mod mock {
         }
 
         pub fn set_pr_status(&self, pr_number: u64, status: PrStatus) {
-            self.pr_statuses
-                .lock()
-                .unwrap()
-                .insert(pr_number, status);
+            self.pr_statuses.lock().unwrap().insert(pr_number, status);
         }
 
         pub fn set_file_content(&self, branch: &str, path: &str, content: &str) {
@@ -691,11 +739,7 @@ pub mod mock {
                 .collect())
         }
 
-        async fn post_issue_comment(
-            &self,
-            number: u64,
-            body: &str,
-        ) -> Result<u64, HammurabiError> {
+        async fn post_issue_comment(&self, number: u64, body: &str) -> Result<u64, HammurabiError> {
             let mut next_id = self.next_comment_id.lock().unwrap();
             let id = *next_id;
             *next_id += 1;
@@ -723,10 +767,7 @@ pub mod mock {
                 body.to_string(),
                 pr,
             ));
-            self.pr_statuses
-                .lock()
-                .unwrap()
-                .insert(pr, PrStatus::Open);
+            self.pr_statuses.lock().unwrap().insert(pr, PrStatus::Open);
             Ok(pr)
         }
 
@@ -785,9 +826,7 @@ pub mod mock {
             label: &str,
         ) -> Result<Option<String>, HammurabiError> {
             let adders = self.label_adders.lock().unwrap();
-            Ok(adders
-                .get(&(issue_number, label.to_string()))
-                .cloned())
+            Ok(adders.get(&(issue_number, label.to_string())).cloned())
         }
 
         async fn find_pull_request_by_head(
@@ -807,7 +846,9 @@ pub mod mock {
             // Fall back to closed/merged PRs
             for (_, pr_head, _, _, pr_number) in prs.iter() {
                 if pr_head == head {
-                    if let Some(PrStatus::Merged | PrStatus::ClosedWithoutMerge) = statuses.get(pr_number) {
+                    if let Some(PrStatus::Merged | PrStatus::ClosedWithoutMerge) =
+                        statuses.get(pr_number)
+                    {
                         return Ok(Some(*pr_number));
                     }
                 }
@@ -914,9 +955,7 @@ mod tests {
             .unwrap();
         assert_eq!(content, "# Spec content");
 
-        let err = client
-            .get_file_content("main", "nonexistent.md")
-            .await;
+        let err = client.get_file_content("main", "nonexistent.md").await;
         assert!(err.is_err());
     }
 }

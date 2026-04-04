@@ -52,14 +52,12 @@ async fn create_or_find_pr(
     }
 }
 
-pub async fn execute(
-    ctx: &TransitionContext,
-    issue: &TrackedIssue,
-) -> Result<(), HammurabiError> {
+pub async fn execute(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<(), HammurabiError> {
     // Idempotency guard: if a PR already exists for this issue (either persisted
     // in DB or found on GitHub for the impl branch), transition to AwaitPRApproval
     // without re-running the expensive AI review.
-    let impl_branch = crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
+    let impl_branch =
+        crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
     let existing_pr = if issue.impl_pr_number.is_some() {
         issue.impl_pr_number
     } else {
@@ -106,13 +104,9 @@ pub async fn execute(
     let gh_issue = ctx.github.get_issue(issue.github_issue_number).await?;
     let default_branch = ctx.github.get_default_branch().await?;
 
-    let spec_content = issue
-        .spec_content
-        .as_deref()
-        .unwrap_or("No spec available");
+    let spec_content = issue.spec_content.as_deref().unwrap_or("No spec available");
 
-    let claude_md =
-        prompts::claude_md_for_review(&gh_issue.title, &gh_issue.body, spec_content);
+    let claude_md = prompts::claude_md_for_review(&gh_issue.title, &gh_issue.body, spec_content);
 
     let prompt = prompts::review_prompt(
         &gh_issue.title,
@@ -181,7 +175,8 @@ pub async fn execute(
             }
 
             // Create (or find) PR for the implementation branch (already pushed by implementing transition)
-            let branch_name = crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
+            let branch_name =
+                crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
             let pr_title = gh_issue.title.clone();
             let pr_body = if is_unknown {
                 format!(
@@ -246,7 +241,10 @@ pub async fn execute(
                 );
 
                 // Create (or find) PR with review findings (branch already pushed by implementing transition)
-                let branch_name = crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL);
+                let branch_name = crate::worktree::branch_name(
+                    issue.github_issue_number,
+                    crate::worktree::TASK_IMPL,
+                );
                 let findings = prompts::extract_blocking_findings(&result.content);
                 let pr_title = gh_issue.title.clone();
                 let pr_body = format!(
@@ -361,8 +359,12 @@ mod tests {
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
         db.update_issue_spec_content(issue.id, "# Spec\nImplement feature X")
             .unwrap();
-        db.update_issue_state(issue.id, IssueState::Reviewing, Some(IssueState::Implementing))
-            .unwrap();
+        db.update_issue_state(
+            issue.id,
+            IssueState::Reviewing,
+            Some(IssueState::Implementing),
+        )
+        .unwrap();
         db.get_issue("owner/repo", 1).unwrap().unwrap()
     }
 
@@ -403,7 +405,9 @@ mod tests {
         assert_eq!(prs.len(), 1);
 
         let comments = gh.created_comments.lock().unwrap();
-        assert!(comments.iter().any(|(_, body)| body.contains("Auto-review passed")));
+        assert!(comments
+            .iter()
+            .any(|(_, body)| body.contains("Auto-review passed")));
 
         let usage = db.get_usage_by_issue(issue.id).unwrap();
         assert_eq!(usage.len(), 1);
@@ -446,10 +450,16 @@ mod tests {
         assert_eq!(updated.review_count, 1);
         // Review feedback should be persisted for the poller to pick up
         assert!(updated.review_feedback.is_some());
-        assert!(updated.review_feedback.as_ref().unwrap().contains("Missing tests"));
+        assert!(updated
+            .review_feedback
+            .as_ref()
+            .unwrap()
+            .contains("Missing tests"));
 
         let comments = gh.created_comments.lock().unwrap();
-        assert!(comments.iter().any(|(_, body)| body.contains("Auto-review found issues")));
+        assert!(comments
+            .iter()
+            .any(|(_, body)| body.contains("Auto-review found issues")));
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
@@ -495,7 +505,9 @@ mod tests {
         assert_eq!(prs.len(), 1);
 
         let comments = gh.created_comments.lock().unwrap();
-        assert!(comments.iter().any(|(_, body)| body.contains("Proceeding to human review")));
+        assert!(comments
+            .iter()
+            .any(|(_, body)| body.contains("Proceeding to human review")));
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
@@ -542,7 +554,9 @@ mod tests {
 
         // Comment should also reflect the unknown verdict
         let comments = gh.created_comments.lock().unwrap();
-        assert!(comments.iter().any(|(_, body)| body.contains("could not be parsed")));
+        assert!(comments
+            .iter()
+            .any(|(_, body)| body.contains("could not be parsed")));
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
@@ -565,8 +579,12 @@ mod tests {
         });
         db.insert_issue("owner/repo", 1, "Add feature X").unwrap();
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
-        db.update_issue_state(issue.id, IssueState::Reviewing, Some(IssueState::Implementing))
-            .unwrap();
+        db.update_issue_state(
+            issue.id,
+            IssueState::Reviewing,
+            Some(IssueState::Implementing),
+        )
+        .unwrap();
         db.update_issue_impl_pr(issue.id, 42).unwrap();
         // Simulate stale review state from a previous FAIL cycle
         db.increment_review_count(issue.id).unwrap();
