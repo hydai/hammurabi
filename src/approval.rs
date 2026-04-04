@@ -19,6 +19,9 @@ pub enum PrApprovalResult {
 
 /// Check for `/approve` or feedback comments from authorized approvers.
 /// Used for spec approval — scans comments since `last_comment_id`.
+///
+/// Iterates forward so the last comment wins: an `/approve` after feedback
+/// approves, and feedback after `/approve` re-opens the review loop.
 pub async fn check_comment_approval(
     github: &dyn GitHubClient,
     issue_number: u64,
@@ -71,6 +74,9 @@ pub async fn check_pr_approval(
 }
 
 /// Check for a `/retry` comment from an authorized approver.
+///
+/// Iterates in reverse to short-circuit on the most recent `/retry` —
+/// only one retry is needed regardless of how many were posted.
 pub async fn check_retry_comment(
     github: &dyn GitHubClient,
     issue_number: u64,
