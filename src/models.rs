@@ -48,37 +48,38 @@ impl IssueState {
     }
 }
 
-impl fmt::Display for IssueState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IssueState::Discovered => write!(f, "Discovered"),
-            IssueState::SpecDrafting => write!(f, "SpecDrafting"),
-            IssueState::AwaitSpecApproval => write!(f, "AwaitSpecApproval"),
-            IssueState::Implementing => write!(f, "Implementing"),
-            IssueState::Reviewing => write!(f, "Reviewing"),
-            IssueState::AwaitPRApproval => write!(f, "AwaitPRApproval"),
-            IssueState::Done => write!(f, "Done"),
-            IssueState::Failed => write!(f, "Failed"),
+macro_rules! issue_state_strings {
+    ($($variant:ident => $s:expr),+ $(,)?) => {
+        impl fmt::Display for IssueState {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self {
+                    $(IssueState::$variant => write!(f, $s),)+
+                }
+            }
         }
-    }
+
+        impl FromStr for IssueState {
+            type Err = String;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $($s => Ok(IssueState::$variant),)+
+                    _ => Err(format!("unknown issue state: {}", s)),
+                }
+            }
+        }
+    };
 }
 
-impl FromStr for IssueState {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Discovered" => Ok(IssueState::Discovered),
-            "SpecDrafting" => Ok(IssueState::SpecDrafting),
-            "AwaitSpecApproval" => Ok(IssueState::AwaitSpecApproval),
-            "Implementing" => Ok(IssueState::Implementing),
-            "Reviewing" => Ok(IssueState::Reviewing),
-            "AwaitPRApproval" => Ok(IssueState::AwaitPRApproval),
-            "Done" => Ok(IssueState::Done),
-            "Failed" => Ok(IssueState::Failed),
-            _ => Err(format!("unknown issue state: {}", s)),
-        }
-    }
+issue_state_strings! {
+    Discovered       => "Discovered",
+    SpecDrafting     => "SpecDrafting",
+    AwaitSpecApproval => "AwaitSpecApproval",
+    Implementing     => "Implementing",
+    Reviewing        => "Reviewing",
+    AwaitPRApproval  => "AwaitPRApproval",
+    Done             => "Done",
+    Failed           => "Failed",
 }
 
 #[derive(Debug, Clone)]
