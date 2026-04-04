@@ -287,20 +287,6 @@ async fn init_repo_runtime(
     })
 }
 
-/// Validate that config is sufficient for dispatching new work.
-fn validate_dispatch_config(config: &RepoConfig) -> Result<(), String> {
-    if config.repo.is_empty() {
-        return Err("repo is empty".into());
-    }
-    if config.ai_model.is_empty() {
-        return Err("ai_model is empty".into());
-    }
-    if config.approvers.is_empty() {
-        return Err("approvers list is empty".into());
-    }
-    Ok(())
-}
-
 async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     let repo = &ctx.config.repo;
     tracing::debug!(repo = %repo, "Starting poll cycle");
@@ -308,16 +294,7 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     // Fetch origin
     ctx.worktree.fetch_origin().await?;
 
-    // Dispatch preflight validation
-    let dispatch_ok = match validate_dispatch_config(&ctx.config) {
-        Ok(()) => true,
-        Err(reason) => {
-            tracing::error!(repo = %repo, "Dispatch preflight failed: {}. Skipping issue discovery and processing, but reconciliation continues.", reason);
-            false
-        }
-    };
-
-    // Check for externally closed issues (always, even if dispatch fails)
+    // Check for externally closed issues
     let all_tracked = ctx.db.get_all_issues_for_repo(repo)?;
     for issue in &all_tracked {
         if issue.state == IssueState::Done || issue.state == IssueState::Failed {
@@ -343,11 +320,6 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
             }
             _ => {}
         }
-    }
-
-    if !dispatch_ok {
-        tracing::debug!(repo = %repo, "Skipping dispatch due to preflight failure");
-        return Ok(());
     }
 
     // Discover new issues
