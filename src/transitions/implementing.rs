@@ -1,10 +1,8 @@
-use crate::claude::AiInvocation;
 use crate::error::HammurabiError;
-use crate::hooks;
 use crate::models::{IssueState, TrackedIssue};
 use crate::prompts;
 
-use super::TransitionContext;
+use super::{AiLifecycleParams, TransitionContext};
 
 pub async fn execute(
     ctx: &TransitionContext,
@@ -34,116 +32,49 @@ pub async fn execute(
     let gh_issue = ctx.github.get_issue(issue.github_issue_number).await?;
     let default_branch = ctx.github.get_default_branch().await?;
 
-    // Read spec content from DB
     let spec_content = issue
         .spec_content
         .as_deref()
         .unwrap_or("No spec available");
 
-    // For revisions, create worktree from the existing impl branch;
-    // for first run, create from default branch
     let base_branch = if is_revision {
         crate::worktree::branch_name(issue.github_issue_number, crate::worktree::TASK_IMPL)
     } else {
         default_branch.clone()
     };
 
-    let worktree_path = ctx
-        .worktree
-        .create_worktree(issue.github_issue_number, "impl", &base_branch)
-        .await?;
-
-    let worktree_str = worktree_path
-        .to_str()
-        .ok_or_else(|| HammurabiError::Worktree("invalid worktree path".to_string()))?
-        .to_string();
-
-    // Run after_create hook
-    let hook_timeout = hooks::hooks_timeout(&ctx.config.hooks);
-    hooks::run_hook(
-        "after_create",
-        ctx.config.hooks.after_create.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await?;
-
-    // Save the repo's original CLAUDE.md so we can restore it before committing
-    // (otherwise `git add -A` would stage the deletion of the tracked file).
-    let original_claude_md = tokio::fs::read_to_string(worktree_path.join("CLAUDE.md"))
-        .await
-        .ok();
-
-    // Seed CLAUDE.md with implementation context
     let claude_md = prompts::claude_md_for_implementation(
         &gh_issue.title,
         &gh_issue.body,
         spec_content,
         feedback,
     );
-    ctx.worktree
-        .seed_file(&worktree_path, "CLAUDE.md", &claude_md)
-        .await?;
-
-    // Invoke AI
     let prompt = prompts::implementation_prompt(
         &gh_issue.title,
         &gh_issue.body,
         spec_content,
         feedback,
     );
-    let model = ctx.config.ai_model_for_task("implement").to_string();
-    let max_turns = ctx.config.ai_max_turns_for_task("implement");
-    let effort = ctx.config.ai_effort_for_task("implement").to_string();
 
-    // Run before_run hook
-    hooks::run_hook(
-        "before_run",
-        ctx.config.hooks.before_run.as_deref(),
-        &worktree_path,
-        hook_timeout,
+    let lifecycle = super::run_ai_lifecycle(
+        ctx,
+        AiLifecycleParams {
+            issue_number: issue.github_issue_number,
+            task_name: "impl".to_string(),
+            base_branch,
+            claude_md: claude_md.clone(),
+            prompt,
+            ai_task: "implement".to_string(),
+            prepend_claude_md: false,
+        },
     )
     .await?;
 
-    let ai_result = ctx
-        .ai
-        .invoke(AiInvocation {
-            model: model.clone(),
-            max_turns,
-            effort,
-            worktree_path: worktree_str.clone(),
-            prompt,
-            timeout_secs: ctx.config.ai_timeout_for_task("implement"),
-            stall_timeout_secs: ctx.config.ai_stall_timeout_for_task("implement"),
-        })
-        .await;
+    let worktree_path = &lifecycle.worktree_path;
+    let worktree_str = &lifecycle.worktree_str;
+    let result = &lifecycle.ai_result;
 
-    // Run after_run hook (best-effort, regardless of AI result)
-    hooks::run_hook_best_effort(
-        "after_run",
-        ctx.config.hooks.after_run.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await;
-
-    let result = ai_result?;
-
-    // Log AI output for debugging
-    tracing::info!(
-        issue = issue.github_issue_number,
-        input_tokens = result.input_tokens,
-        output_tokens = result.output_tokens,
-        content_len = result.content.len(),
-        "AI invocation complete"
-    );
-    tracing::debug!(
-        issue = issue.github_issue_number,
-        content = %result.content,
-        "AI output content"
-    );
-
-    // Log usage
+    let model = ctx.config.ai_model_for_task("implement").to_string();
     ctx.db.log_usage(
         issue.id,
         None,
@@ -153,15 +84,20 @@ pub async fn execute(
         &model,
     )?;
 
-    // Remove the seeded CLAUDE.md only if it is still unchanged from the
-    // seeded implementation context. If the implementation intentionally
-    // modified CLAUDE.md, preserve those changes for commit.
+    // Restore the original CLAUDE.md if the AI didn't modify it.
+    // The lifecycle seeded a temporary CLAUDE.md; if unchanged, restore the
+    // repo's version (or remove it) so `git add -A` doesn't stage the deletion.
     let claude_md_path = worktree_path.join("CLAUDE.md");
     let current_claude_md = tokio::fs::read_to_string(&claude_md_path).await.ok();
     if current_claude_md.as_deref() == Some(claude_md.as_str()) {
-        if let Some(ref original) = original_claude_md {
-            let _ = tokio::fs::write(&claude_md_path, original).await;
-        } else {
+        // CLAUDE.md wasn't modified by AI — restore from git or remove
+        let restore = tokio::process::Command::new("git")
+            .args(["checkout", "HEAD", "--", "CLAUDE.md"])
+            .current_dir(worktree_path)
+            .output()
+            .await;
+        if restore.is_err() || !restore.unwrap().status.success() {
+            // No CLAUDE.md in the branch — just remove the seeded one
             let _ = tokio::fs::remove_file(&claude_md_path).await;
         }
     }

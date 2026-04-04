@@ -1,10 +1,9 @@
-use crate::claude::AiInvocation;
 use crate::error::HammurabiError;
 use crate::hooks;
 use crate::models::{IssueState, TrackedIssue};
 use crate::prompts;
 
-use super::TransitionContext;
+use super::{AiLifecycleParams, TransitionContext};
 
 pub async fn execute(
     ctx: &TransitionContext,
@@ -17,121 +16,56 @@ pub async fn execute(
         "Starting spec drafting"
     );
 
-    // Fetch issue details from GitHub
     let gh_issue = ctx.github.get_issue(issue.github_issue_number).await?;
-
-    // Get default branch
     let default_branch = ctx.github.get_default_branch().await?;
 
-    // Create temporary worktree for AI to explore the repo
-    let worktree_path = ctx
-        .worktree
-        .create_worktree(issue.github_issue_number, "spec", &default_branch)
-        .await?;
-
-    let worktree_str = worktree_path
-        .to_str()
-        .ok_or_else(|| HammurabiError::Worktree("invalid worktree path".to_string()))?
-        .to_string();
-
-    // Run after_create hook
-    let hook_timeout = hooks::hooks_timeout(&ctx.config.hooks);
-    hooks::run_hook(
-        "after_create",
-        ctx.config.hooks.after_create.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await?;
-
-    // Seed CLAUDE.md
     let claude_md = prompts::claude_md_for_spec(&gh_issue.title, &gh_issue.body);
-    ctx.worktree
-        .seed_file(&worktree_path, "CLAUDE.md", &claude_md)
-        .await?;
-
-    // Invoke AI with optional feedback
     let prompt = prompts::spec_drafting_prompt(&gh_issue.title, &gh_issue.body, feedback);
-    let model = ctx.config.ai_model_for_task("spec").to_string();
-    let max_turns = ctx.config.ai_max_turns_for_task("spec");
-    let effort = ctx.config.ai_effort_for_task("spec").to_string();
 
-    // Run before_run hook
-    hooks::run_hook(
-        "before_run",
-        ctx.config.hooks.before_run.as_deref(),
-        &worktree_path,
-        hook_timeout,
+    let lifecycle = super::run_ai_lifecycle(
+        ctx,
+        AiLifecycleParams {
+            issue_number: issue.github_issue_number,
+            task_name: "spec".to_string(),
+            base_branch: default_branch,
+            claude_md,
+            prompt,
+            ai_task: "spec".to_string(),
+            prepend_claude_md: false,
+        },
     )
     .await?;
 
-    let ai_result = ctx
-        .ai
-        .invoke(AiInvocation {
-            model: model.clone(),
-            max_turns,
-            effort,
-            worktree_path: worktree_str.clone(),
-            prompt,
-            timeout_secs: ctx.config.ai_timeout_for_task("spec"),
-            stall_timeout_secs: ctx.config.ai_stall_timeout_for_task("spec"),
-        })
-        .await;
-
-    // Run after_run hook (best-effort, regardless of AI result)
-    hooks::run_hook_best_effort(
-        "after_run",
-        ctx.config.hooks.after_run.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await;
-
-    let result = ai_result?;
-
-    // Log AI output for debugging
-    tracing::info!(
-        issue = issue.github_issue_number,
-        input_tokens = result.input_tokens,
-        output_tokens = result.output_tokens,
-        content_len = result.content.len(),
-        "AI invocation complete"
-    );
-    tracing::debug!(
-        issue = issue.github_issue_number,
-        content = %result.content,
-        "AI output content"
-    );
-
-    // Log usage
+    let model = ctx.config.ai_model_for_task("spec").to_string();
     ctx.db.log_usage(
         issue.id,
         None,
         "spec_drafting",
-        result.input_tokens,
-        result.output_tokens,
+        lifecycle.ai_result.input_tokens,
+        lifecycle.ai_result.output_tokens,
         &model,
     )?;
 
     // Remove seeded CLAUDE.md before reading spec output
-    let _ = tokio::fs::remove_file(worktree_path.join("CLAUDE.md")).await;
+    let _ = tokio::fs::remove_file(lifecycle.worktree_path.join("CLAUDE.md")).await;
 
     // Read spec content from worktree (AI writes SPEC.md there)
-    let spec_path = worktree_path.join("SPEC.md");
+    let spec_path = lifecycle.worktree_path.join("SPEC.md");
     let spec_content = tokio::fs::read_to_string(&spec_path).await.unwrap_or_else(|_| {
         // Fallback: use AI output directly if no SPEC.md was written
-        result.content.clone()
+        lifecycle.ai_result.content.clone()
     });
 
     // Clean up worktree
+    let hook_timeout = hooks::hooks_timeout(&ctx.config.hooks);
     hooks::run_hook_best_effort(
         "before_remove",
         ctx.config.hooks.before_remove.as_deref(),
-        &worktree_path,
+        &lifecycle.worktree_path,
         hook_timeout,
     )
     .await;
-    let _ = ctx.worktree.remove_worktree(&worktree_path).await;
+    let _ = ctx.worktree.remove_worktree(&lifecycle.worktree_path).await;
 
     // Post spec as issue comment
     let comment_body = format!(

@@ -1,10 +1,9 @@
-use crate::claude::AiInvocation;
 use crate::error::HammurabiError;
 use crate::hooks;
 use crate::models::{IssueState, TrackedIssue};
 use crate::prompts;
 
-use super::TransitionContext;
+use super::{AiLifecycleParams, TransitionContext};
 
 /// Create a PR, handling the case where one already exists for the head branch
 /// (e.g., after a crash between PR creation and DB persistence).
@@ -112,113 +111,48 @@ pub async fn execute(
         .as_deref()
         .unwrap_or("No spec available");
 
-    // Create worktree from the implementation branch (reuse impl_branch from above)
-    let worktree_path = ctx
-        .worktree
-        .create_worktree(issue.github_issue_number, "review", &impl_branch)
-        .await?;
+    let claude_md =
+        prompts::claude_md_for_review(&gh_issue.title, &gh_issue.body, spec_content);
 
-    let worktree_str = worktree_path
-        .to_str()
-        .ok_or_else(|| HammurabiError::Worktree("invalid worktree path".to_string()))?
-        .to_string();
+    let prompt = prompts::review_prompt(
+        &gh_issue.title,
+        &gh_issue.body,
+        spec_content,
+        &default_branch,
+    );
 
-    let hook_timeout = hooks::hooks_timeout(&ctx.config.hooks);
-    let model = ctx.config.ai_model_for_task("review").to_string();
+    let lifecycle_result = super::run_ai_lifecycle(
+        ctx,
+        AiLifecycleParams {
+            issue_number: issue.github_issue_number,
+            task_name: "review".to_string(),
+            base_branch: impl_branch.clone(),
+            claude_md,
+            prompt,
+            ai_task: "review".to_string(),
+            prepend_claude_md: true,
+        },
+    )
+    .await;
 
-    // Wrap all worktree operations so cleanup always runs, even if hooks or
-    // seeding fail before the AI invocation starts.
-    let ai_result = async {
-        hooks::run_hook(
-            "after_create",
-            ctx.config.hooks.after_create.as_deref(),
-            &worktree_path,
+    // Always clean up review worktree regardless of success or failure
+    if let Ok(ref lifecycle) = lifecycle_result {
+        let hook_timeout = hooks::hooks_timeout(&ctx.config.hooks);
+        let _ = tokio::fs::remove_file(lifecycle.worktree_path.join("CLAUDE.md")).await;
+        hooks::run_hook_best_effort(
+            "before_remove",
+            ctx.config.hooks.before_remove.as_deref(),
+            &lifecycle.worktree_path,
             hook_timeout,
         )
-        .await?;
-
-        // Prepend review context to CLAUDE.md, preserving the project's existing
-        // instructions so hooks/tools that depend on them still work.
-        let review_md =
-            prompts::claude_md_for_review(&gh_issue.title, &gh_issue.body, spec_content);
-        let existing = tokio::fs::read_to_string(worktree_path.join("CLAUDE.md"))
-            .await
-            .unwrap_or_default();
-        let claude_md = if existing.is_empty() {
-            review_md
-        } else {
-            format!("{review_md}\n\n---\n\n{existing}")
-        };
-        ctx.worktree
-            .seed_file(&worktree_path, "CLAUDE.md", &claude_md)
-            .await?;
-
-        hooks::run_hook(
-            "before_run",
-            ctx.config.hooks.before_run.as_deref(),
-            &worktree_path,
-            hook_timeout,
-        )
-        .await?;
-
-        let prompt = prompts::review_prompt(
-            &gh_issue.title,
-            &gh_issue.body,
-            spec_content,
-            &default_branch,
-        );
-        let max_turns = ctx.config.ai_max_turns_for_task("review");
-        let effort = ctx.config.ai_effort_for_task("review").to_string();
-
-        ctx.ai
-            .invoke(AiInvocation {
-                model: model.clone(),
-                max_turns,
-                effort,
-                worktree_path: worktree_str.clone(),
-                prompt,
-                timeout_secs: ctx.config.ai_timeout_for_task("review"),
-                stall_timeout_secs: ctx.config.ai_stall_timeout_for_task("review"),
-            })
-            .await
+        .await;
+        let _ = ctx.worktree.remove_worktree(&lifecycle.worktree_path).await;
     }
-    .await;
 
-    // Always clean up worktree regardless of success or failure above
-    hooks::run_hook_best_effort(
-        "after_run",
-        ctx.config.hooks.after_run.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await;
-    let _ = tokio::fs::remove_file(worktree_path.join("CLAUDE.md")).await;
-    hooks::run_hook_best_effort(
-        "before_remove",
-        ctx.config.hooks.before_remove.as_deref(),
-        &worktree_path,
-        hook_timeout,
-    )
-    .await;
-    let _ = ctx.worktree.remove_worktree(&worktree_path).await;
+    let lifecycle = lifecycle_result?;
+    let result = &lifecycle.ai_result;
 
-    // Now propagate errors after cleanup
-    let result = ai_result?;
-
-    tracing::info!(
-        issue = issue.github_issue_number,
-        input_tokens = result.input_tokens,
-        output_tokens = result.output_tokens,
-        content_len = result.content.len(),
-        "Review AI invocation complete"
-    );
-    tracing::debug!(
-        issue = issue.github_issue_number,
-        content = %result.content,
-        "Review output content"
-    );
-
-    // Log usage
+    let model = ctx.config.ai_model_for_task("review").to_string();
     ctx.db.log_usage(
         issue.id,
         None,
