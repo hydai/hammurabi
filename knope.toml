@@ -28,8 +28,12 @@ command = "git push --force-with-lease --set-upstream origin release"
 [[workflows.steps]]
 type = "CreatePullRequest"
 base = "main"
-title = "chore: release $version"
-body = "$changelog"
+
+[workflows.steps.title]
+template = "chore: release $version"
+
+[workflows.steps.body]
+template = "$changelog"
 
 [[workflows]]
 name = "release"
