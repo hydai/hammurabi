@@ -301,7 +301,7 @@ impl Database {
 
         let result = stmt
             .query_row(params![repo, github_issue_number as i64], |row| {
-                Ok(row_to_tracked_issue(row))
+                row_to_tracked_issue(row)
             })
             .optional()
             .map_err(db_err)?;
@@ -325,7 +325,7 @@ impl Database {
 
         let issues = stmt
             .query_map(params![github_issue_number as i64], |row| {
-                Ok(row_to_tracked_issue(row))
+                row_to_tracked_issue(row)
             })
             .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
@@ -342,7 +342,7 @@ impl Database {
             .map_err(db_err)?;
 
         let issues = stmt
-            .query_map([], |row| Ok(row_to_tracked_issue(row)))
+            .query_map([], |row| row_to_tracked_issue(row))
             .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
             .map_err(db_err)?;
@@ -361,7 +361,7 @@ impl Database {
             .map_err(db_err)?;
 
         let issues = stmt
-            .query_map(params![repo], |row| Ok(row_to_tracked_issue(row)))
+            .query_map(params![repo], |row| row_to_tracked_issue(row))
             .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
             .map_err(db_err)?;
@@ -381,7 +381,7 @@ impl Database {
 
         let issues = stmt
             .query_map(params![state.to_string()], |row| {
-                Ok(row_to_tracked_issue(row))
+                row_to_tracked_issue(row)
             })
             .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
@@ -645,35 +645,33 @@ impl Database {
     }
 }
 
-fn row_to_tracked_issue(row: &rusqlite::Row) -> TrackedIssue {
-    TrackedIssue {
-        id: row.get(0).unwrap(),
-        repo: row.get(1).unwrap(),
-        github_issue_number: row.get::<_, i64>(2).unwrap() as u64,
-        title: row.get(3).unwrap(),
+fn row_to_tracked_issue(row: &rusqlite::Row) -> SqlResult<TrackedIssue> {
+    Ok(TrackedIssue {
+        id: row.get(0)?,
+        repo: row.get(1)?,
+        github_issue_number: row.get::<_, i64>(2)? as u64,
+        title: row.get(3)?,
         state: row
-            .get::<_, String>(4)
-            .unwrap()
+            .get::<_, String>(4)?
             .parse()
             .unwrap_or(IssueState::Failed),
-        spec_comment_id: row.get::<_, Option<i64>>(5).unwrap().map(|v| v as u64),
-        spec_content: row.get(6).unwrap(),
-        impl_pr_number: row.get::<_, Option<i64>>(7).unwrap().map(|v| v as u64),
-        last_comment_id: row.get::<_, Option<i64>>(8).unwrap().map(|v| v as u64),
-        last_pr_comment_id: row.get::<_, Option<i64>>(9).unwrap().map(|v| v as u64),
+        spec_comment_id: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+        spec_content: row.get(6)?,
+        impl_pr_number: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+        last_comment_id: row.get::<_, Option<i64>>(8)?.map(|v| v as u64),
+        last_pr_comment_id: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
         previous_state: row
-            .get::<_, Option<String>>(10)
-            .unwrap()
+            .get::<_, Option<String>>(10)?
             .and_then(|s| s.parse().ok()),
-        error_message: row.get(11).unwrap(),
-        worktree_path: row.get(12).unwrap(),
+        error_message: row.get(11)?,
+        worktree_path: row.get(12)?,
         retry_count: row.get::<_, i64>(13).unwrap_or(0) as u32,
         review_count: row.get::<_, i64>(14).unwrap_or(0) as u32,
-        review_feedback: row.get(15).unwrap(),
+        review_feedback: row.get(15)?,
         bypass: row.get::<_, i64>(16).unwrap_or(0) != 0,
-        created_at: row.get(17).unwrap(),
-        updated_at: row.get(18).unwrap(),
-    }
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
+    })
 }
 
 trait OptionalRow {
