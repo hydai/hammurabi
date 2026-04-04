@@ -180,12 +180,8 @@ async fn test_implementation_failure_and_retry() {
     assert!(result.is_err());
 
     // Simulate failure state
-    db.update_issue_state(
-        issue.id,
-        IssueState::Failed,
-        Some(IssueState::Implementing),
-    )
-    .unwrap();
+    db.update_issue_state(issue.id, IssueState::Failed, Some(IssueState::Implementing))
+        .unwrap();
 
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::Failed);

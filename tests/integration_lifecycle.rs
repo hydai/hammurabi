@@ -110,7 +110,8 @@ async fn test_full_lifecycle() {
     };
 
     // Phase 1: Insert as Discovered
-    db.insert_issue("owner/repo", 1, "Add user authentication").unwrap();
+    db.insert_issue("owner/repo", 1, "Add user authentication")
+        .unwrap();
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
     assert_eq!(issue.state, IssueState::Discovered);
 
@@ -295,7 +296,8 @@ async fn test_bypass_spec_auto_approval() {
 async fn test_bypass_rejected_for_non_approver() {
     // Bypass label is present but issue creator is NOT an approver — bypass should not activate.
     let db = Database::open(":memory:").unwrap();
-    db.insert_issue("owner/repo", 1, "Feature from outsider").unwrap();
+    db.insert_issue("owner/repo", 1, "Feature from outsider")
+        .unwrap();
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
     // Do NOT set bypass (simulating what poller would do for non-approver)
