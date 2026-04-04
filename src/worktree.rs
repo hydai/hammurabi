@@ -154,8 +154,10 @@ impl GitWorktreeManager {
     ) -> Result<String, HammurabiError> {
         let token = self.token_provider.get_token().await?;
         let askpass_path = self.base_dir.join(".git-askpass.sh");
-        let script_content = format!("#!/bin/sh\necho '{}'", token);
-        tokio::fs::write(&askpass_path, &script_content)
+        // The script reads the token from an environment variable instead of
+        // embedding it in the script body, eliminating shell injection risk.
+        let script_content = "#!/bin/sh\necho \"$GIT_ASKPASS_TOKEN\"";
+        tokio::fs::write(&askpass_path, script_content)
             .await
             .map_err(|e| HammurabiError::Worktree(format!("write askpass script: {}", e)))?;
 
@@ -173,6 +175,7 @@ impl GitWorktreeManager {
             .current_dir(cwd)
             .env("LC_ALL", "C")
             .env("GIT_ASKPASS", &askpass_path)
+            .env("GIT_ASKPASS_TOKEN", &token)
             .env("GIT_TERMINAL_PROMPT", "0")
             .output()
             .await
