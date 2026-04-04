@@ -342,7 +342,7 @@ impl Database {
             .map_err(db_err)?;
 
         let issues = stmt
-            .query_map([], |row| row_to_tracked_issue(row))
+            .query_map([], row_to_tracked_issue)
             .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
             .map_err(db_err)?;
@@ -361,7 +361,7 @@ impl Database {
             .map_err(db_err)?;
 
         let issues = stmt
-            .query_map(params![repo], |row| row_to_tracked_issue(row))
+            .query_map(params![repo], row_to_tracked_issue)
             .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
             .map_err(db_err)?;
@@ -369,6 +369,7 @@ impl Database {
         Ok(issues)
     }
 
+    #[allow(dead_code)]
     pub fn get_issues_by_state(
         &self,
         state: IssueState,
@@ -615,6 +616,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_usage_by_issue(&self, issue_id: i64) -> Result<Vec<UsageEntry>, HammurabiError> {
         let conn = self.conn();
         let mut stmt = conn

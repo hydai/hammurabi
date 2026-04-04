@@ -729,9 +729,9 @@ pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         let verdict_candidate = if let Some(rest) = trimmed.strip_prefix("## Verdict") {
-            rest.trim_start().trim_start_matches(|c: char| c == ':' || c == '-').trim_start()
+            rest.trim_start().trim_start_matches([':', '-']).trim_start()
         } else if let Some(rest) = trimmed.strip_prefix("## Review Summary") {
-            rest.trim_start().trim_start_matches(|c: char| c == ':' || c == '-').trim_start()
+            rest.trim_start().trim_start_matches([':', '-']).trim_start()
         } else {
             trimmed
         };
@@ -749,7 +749,7 @@ pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("## Verdict") {
-            let rest = rest.trim_start().trim_start_matches(|c: char| c == ':' || c == '-').trim_start();
+            let rest = rest.trim_start().trim_start_matches([':', '-']).trim_start();
             if !rest.is_empty() {
                 if let Some(result) = parse_verdict_line(rest) {
                     return result;
@@ -774,7 +774,7 @@ pub fn parse_review_verdict(ai_output: &str) -> ReviewVerdict {
     for line in ai_output.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("## Review Summary") {
-            let rest = rest.trim_start().trim_start_matches(|c: char| c == ':' || c == '-').trim_start();
+            let rest = rest.trim_start().trim_start_matches([':', '-']).trim_start();
             if !rest.is_empty() {
                 if let Some(result) = parse_verdict_line(rest) {
                     return result;

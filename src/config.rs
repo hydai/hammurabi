@@ -200,6 +200,7 @@ pub struct Config {
 impl Config {
     /// Backward-compat helper: return the first (and possibly only) repo config.
     /// Panics if repos is empty (should be validated during load).
+    #[allow(dead_code)]
     pub fn first_repo(&self) -> &RepoConfig {
         &self.repos[0]
     }

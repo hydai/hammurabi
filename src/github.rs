@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use serde::Deserialize;
 
 use crate::error::HammurabiError;
 
@@ -40,11 +39,7 @@ pub enum PrStatus {
     ClosedWithoutMerge,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct PrFileContent {
-    pub content: String,
-}
-
+#[allow(dead_code)]
 #[async_trait]
 pub trait GitHubClient: Send + Sync {
     async fn list_labeled_issues(&self, label: &str) -> Result<Vec<GitHubIssue>, HammurabiError>;

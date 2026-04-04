@@ -116,7 +116,7 @@ pub async fn execute(
     };
     let has_changes = ctx
         .worktree
-        .commit_all_changes(&worktree_path, &commit_msg)
+        .commit_all_changes(worktree_path, &commit_msg)
         .await?;
 
     if !has_changes {
@@ -139,7 +139,7 @@ pub async fn execute(
             Some(IssueState::Implementing),
         )?;
         ctx.db
-            .update_issue_worktree(issue.id, Some(&worktree_str))?;
+            .update_issue_worktree(issue.id, Some(worktree_str))?;
 
         // Best-effort: DB state is already committed to AwaitPRApproval
         if let Err(e) = ctx
@@ -170,7 +170,7 @@ pub async fn execute(
             Some(IssueState::Implementing),
         )?;
         ctx.db
-            .update_issue_worktree(issue.id, Some(&worktree_str))?;
+            .update_issue_worktree(issue.id, Some(worktree_str))?;
 
         let comment_msg = if is_revision {
             "Implementation revised based on review feedback. Running auto-review..."

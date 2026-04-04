@@ -18,6 +18,7 @@ pub struct AiInvocation {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AiResult {
     pub content: String,
     pub session_id: Option<String>,

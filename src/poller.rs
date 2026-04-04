@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
@@ -36,7 +36,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     let db_path = base_dir.join("hammurabi.db");
     tokio::fs::create_dir_all(&base_dir)
         .await
-        .map_err(|e| HammurabiError::Io(e))?;
+        .map_err(HammurabiError::Io)?;
     let db = Arc::new(Database::open(
         db_path.to_str().unwrap_or(".hammurabi/hammurabi.db"),
     )?);
@@ -248,7 +248,7 @@ async fn init_repo_runtime(
     repo_config: &RepoConfig,
     github_auth: &GitHubAuth,
     api_retry_count: u32,
-    repos_dir: &PathBuf,
+    repos_dir: &Path,
     token_provider: Arc<dyn TokenProvider>,
 ) -> Result<RepoRuntime, HammurabiError> {
     let github = Arc::new(OctocrabClient::new(
@@ -801,17 +801,14 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
 
         // Check if issue was closed externally
         if !issue.state.is_terminal() {
-            match ctx.github.is_issue_open(issue.github_issue_number).await {
-                Ok(false) => {
-                    ctx.db
-                        .update_issue_state(issue.id, IssueState::Done, Some(issue.state))?;
-                    tracing::info!(
-                        repo = %repo,
-                        issue = issue.github_issue_number,
-                        "Issue closed during downtime, marking as Done"
-                    );
-                }
-                _ => {}
+            if let Ok(false) = ctx.github.is_issue_open(issue.github_issue_number).await {
+                ctx.db
+                    .update_issue_state(issue.id, IssueState::Done, Some(issue.state))?;
+                tracing::info!(
+                    repo = %repo,
+                    issue = issue.github_issue_number,
+                    "Issue closed during downtime, marking as Done"
+                );
             }
         }
     }

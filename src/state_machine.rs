@@ -1,3 +1,9 @@
+// The pure state machine defines the valid (State, Event) → SideEffect
+// transitions. The runtime currently dispatches directly to transition
+// modules, so these types are exercised only through tests. They remain
+// as the authoritative specification of allowed transitions.
+#![allow(dead_code)]
+
 use crate::error::HammurabiError;
 use crate::models::IssueState;
 
@@ -110,7 +116,7 @@ pub fn transition(
             },
         ]),
 
-        (IssueState::AwaitPRApproval, Event::PrFeedback { body }) => Ok(vec![
+        (IssueState::AwaitPRApproval, Event::PrFeedback { body: _ }) => Ok(vec![
             SideEffect::UpdateState {
                 new_state: IssueState::Implementing,
                 previous_state: Some(IssueState::AwaitPRApproval),

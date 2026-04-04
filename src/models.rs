@@ -24,6 +24,7 @@ impl IssueState {
         )
     }
 
+    #[allow(dead_code)]
     pub fn is_blocking(&self) -> bool {
         matches!(
             self,
@@ -83,6 +84,7 @@ issue_state_strings! {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TrackedIssue {
     pub id: i64,
     pub repo: String,
@@ -106,6 +108,7 @@ pub struct TrackedIssue {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct UsageEntry {
     pub id: i64,
     pub issue_id: i64,

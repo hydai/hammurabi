@@ -21,6 +21,7 @@ pub enum HammurabiError {
     Worktree(String),
 
     #[error("state machine error: {0}")]
+    #[allow(dead_code)]
     StateMachine(String),
 
     #[error("I/O error: {0}")]

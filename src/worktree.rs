@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use crate::error::HammurabiError;
 
-pub const TASK_SPEC: &str = "spec";
 pub const TASK_IMPL: &str = "impl";
-pub const TASK_REVIEW: &str = "review";
 
 /// Build a branch name for a Hammurabi-managed worktree.
 pub fn branch_name(issue_number: u64, task_name: &str) -> String {

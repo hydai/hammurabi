@@ -115,8 +115,8 @@ async fn main() -> anyhow::Result<()> {
             }
 
             println!(
-                "{:<25} {:<8} {:<42} {:<22} {:<12} {}",
-                "Repo", "Issue #", "Title", "State", "Age", "Last Activity"
+                "{:<25} {:<8} {:<42} {:<22} {:<12} Last Activity",
+                "Repo", "Issue #", "Title", "State", "Age"
             );
             println!("{}", "-".repeat(125));
 
