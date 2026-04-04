@@ -199,9 +199,15 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
 }
 
 /// Produce a comparable fingerprint for the auth config so we can detect changes.
+/// Uses a hash for token auth to avoid storing the raw credential in memory.
 fn auth_fingerprint(auth: &GitHubAuth) -> String {
     match auth {
-        GitHubAuth::Token(token) => format!("token:{}", token),
+        GitHubAuth::Token(token) => {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            token.hash(&mut hasher);
+            format!("token:{:x}", hasher.finish())
+        }
         GitHubAuth::App { app_id, installation_id, .. } => {
             format!("app:{}:{}", app_id, installation_id)
         }
