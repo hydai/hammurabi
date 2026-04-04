@@ -287,14 +287,11 @@ async fn init_repo_runtime(
     })
 }
 
-async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
+/// Check for issues that were closed externally (outside Hammurabi) and
+/// mark them as Done. Skips terminal-state issues. API errors are logged
+/// but do not fail the poll cycle.
+async fn reconcile_closed_issues(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     let repo = &ctx.config.repo;
-    tracing::debug!(repo = %repo, "Starting poll cycle");
-
-    // Fetch origin
-    ctx.worktree.fetch_origin().await?;
-
-    // Check for externally closed issues
     let all_tracked = ctx.db.get_all_issues_for_repo(repo)?;
     for issue in &all_tracked {
         if issue.state == IssueState::Done || issue.state == IssueState::Failed {
@@ -321,6 +318,17 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
             _ => {}
         }
     }
+    Ok(())
+}
+
+async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
+    let repo = &ctx.config.repo;
+    tracing::debug!(repo = %repo, "Starting poll cycle");
+
+    // Fetch origin
+    ctx.worktree.fetch_origin().await?;
+
+    reconcile_closed_issues(ctx).await?;
 
     // Discover new issues
     let labeled_issues = ctx
@@ -809,4 +817,152 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::claude::mock::MockAiAgent;
+    use crate::db::Database;
+    use crate::github::mock::MockGitHubClient;
+    use crate::github::GitHubIssue;
+    use crate::transitions::test_helpers::test_config;
+    use crate::transitions::TransitionContext;
+    use crate::worktree::mock::MockWorktreeManager;
+
+    fn build_ctx(
+        gh: Arc<MockGitHubClient>,
+        db: Arc<Database>,
+    ) -> TransitionContext {
+        TransitionContext {
+            github: gh,
+            ai: Arc::new(MockAiAgent::new()),
+            worktree: Arc::new(MockWorktreeManager::new(
+                std::env::temp_dir().join("hammurabi-test-poller"),
+            )),
+            db,
+            config: Arc::new(test_config()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_marks_closed_issue_as_done() {
+        let gh = Arc::new(MockGitHubClient::new());
+        let db = Arc::new(Database::open(":memory:").unwrap());
+
+        // Insert an issue in Implementing state
+        db.insert_issue("owner/repo", 1, "Test issue").unwrap();
+        db.update_issue_state(1, IssueState::Implementing, Some(IssueState::Discovered))
+            .unwrap();
+
+        // Add it to GitHub as a closed issue
+        gh.add_issue(GitHubIssue {
+            number: 1,
+            title: "Test issue".to_string(),
+            body: String::new(),
+            labels: vec!["hammurabi".to_string()],
+            state: "Closed".to_string(),
+            user_login: "alice".to_string(),
+        });
+
+        let ctx = build_ctx(gh, db.clone());
+        reconcile_closed_issues(&ctx).await.unwrap();
+
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert_eq!(issue.state, IssueState::Done);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_skips_terminal_state_issues() {
+        let gh = Arc::new(MockGitHubClient::new());
+        let db = Arc::new(Database::open(":memory:").unwrap());
+
+        db.insert_issue("owner/repo", 1, "Done issue").unwrap();
+        db.update_issue_state(1, IssueState::Done, Some(IssueState::Discovered))
+            .unwrap();
+
+        gh.add_issue(GitHubIssue {
+            number: 1,
+            title: "Done issue".to_string(),
+            body: String::new(),
+            labels: vec!["hammurabi".to_string()],
+            state: "Closed".to_string(),
+            user_login: "alice".to_string(),
+        });
+
+        let ctx = build_ctx(gh, db.clone());
+        reconcile_closed_issues(&ctx).await.unwrap();
+
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert_eq!(issue.state, IssueState::Done);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_leaves_open_issues_unchanged() {
+        let gh = Arc::new(MockGitHubClient::new());
+        let db = Arc::new(Database::open(":memory:").unwrap());
+
+        db.insert_issue("owner/repo", 1, "Open issue").unwrap();
+        db.update_issue_state(1, IssueState::Implementing, Some(IssueState::Discovered))
+            .unwrap();
+
+        gh.add_issue(GitHubIssue {
+            number: 1,
+            title: "Open issue".to_string(),
+            body: String::new(),
+            labels: vec!["hammurabi".to_string()],
+            state: "Open".to_string(),
+            user_login: "alice".to_string(),
+        });
+
+        let ctx = build_ctx(gh, db.clone());
+        reconcile_closed_issues(&ctx).await.unwrap();
+
+        let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
+        assert_eq!(issue.state, IssueState::Implementing);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_multiple_issues_mixed_states() {
+        let gh = Arc::new(MockGitHubClient::new());
+        let db = Arc::new(Database::open(":memory:").unwrap());
+
+        // Issue 1: active, closed externally
+        db.insert_issue("owner/repo", 1, "Closed issue").unwrap();
+        db.update_issue_state(1, IssueState::Implementing, Some(IssueState::Discovered))
+            .unwrap();
+        gh.add_issue(GitHubIssue {
+            number: 1,
+            title: "Closed issue".to_string(),
+            body: String::new(),
+            labels: vec!["hammurabi".to_string()],
+            state: "Closed".to_string(),
+            user_login: "alice".to_string(),
+        });
+
+        // Issue 2: active, still open
+        db.insert_issue("owner/repo", 2, "Open issue").unwrap();
+        db.update_issue_state(2, IssueState::SpecDrafting, Some(IssueState::Discovered))
+            .unwrap();
+        gh.add_issue(GitHubIssue {
+            number: 2,
+            title: "Open issue".to_string(),
+            body: String::new(),
+            labels: vec!["hammurabi".to_string()],
+            state: "Open".to_string(),
+            user_login: "alice".to_string(),
+        });
+
+        // Issue 3: already Done
+        db.insert_issue("owner/repo", 3, "Done issue").unwrap();
+        db.update_issue_state(3, IssueState::Done, Some(IssueState::Discovered))
+            .unwrap();
+
+        let ctx = build_ctx(gh, db.clone());
+        reconcile_closed_issues(&ctx).await.unwrap();
+
+        assert_eq!(db.get_issue("owner/repo", 1).unwrap().unwrap().state, IssueState::Done);
+        assert_eq!(db.get_issue("owner/repo", 2).unwrap().unwrap().state, IssueState::SpecDrafting);
+        assert_eq!(db.get_issue("owner/repo", 3).unwrap().unwrap().state, IssueState::Done);
+    }
 }
