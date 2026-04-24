@@ -43,9 +43,21 @@ impl Drop for LockFile {
     }
 }
 
+#[cfg(unix)]
 fn is_process_running(pid: u32) -> bool {
-    // On Unix, sending signal 0 checks if process exists
+    // On Unix, sending signal 0 checks if the target process exists without
+    // actually signaling it. `kill` returns 0 on success.
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_process_running(_pid: u32) -> bool {
+    // No portable liveness probe on Windows; treat every lock file as
+    // stale. A daemon that crashed without cleanup gets its successor
+    // started without friction; a live daemon on the same data dir would
+    // be racing the new process regardless (Windows file locking would
+    // make the SQLite open fail loudly).
+    false
 }
 
 #[cfg(test)]
