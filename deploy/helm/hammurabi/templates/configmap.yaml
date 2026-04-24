@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+{{ include "hammurabi.labels" . | indent 4 }}
+data:
+  hammurabi.toml: |
+{{ include "hammurabi.renderedConfig" . | indent 4 }}

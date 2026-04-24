@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+{{ include "hammurabi.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+{{ include "hammurabi.selectorLabels" . | indent 6 }}
+  template:
+    metadata:
+      labels:
+{{ include "hammurabi.selectorLabels" . | indent 8 }}
+{{- with .Values.podLabels }}
+{{ toYaml . | indent 8 }}
+{{- end }}
+      annotations:
+        checksum/config: {{ include "hammurabi.renderedConfig" . | sha256sum }}
+{{- with .Values.podAnnotations }}
+{{ toYaml . | indent 8 }}
+{{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+{{ toYaml .Values.securityContext.pod | indent 8 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      containers:
+        - name: hammurabi
+          image: {{ include "hammurabi.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+{{ toYaml .Values.securityContext.container | indent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "hammurabi.secretName" . }}
+                optional: false
+          {{- with .Values.extraEnvFrom }}
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          env:
+            - name: RUST_LOG
+              value: info
+          {{- with .Values.extraEnv }}
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            exec:
+              command:
+{{ toYaml .Values.livenessProbe.exec.command | indent 16 }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/hammurabi
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/hammurabi
+            - name: secrets-files
+              mountPath: /var/run/secrets/hammurabi
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          {{- with .Values.resources }}
+          resources:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-config
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: secrets-files
+          secret:
+            secretName: {{ include "hammurabi.secretName" . }}
+            defaultMode: 0400
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpEmptyDirSizeLimit }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+      {{- end }}

@@ -1,0 +1,25 @@
+apiVersion: v2
+name: hammurabi
+description: AI-powered GitHub issue lifecycle daemon with mandatory human approval gates.
+type: application
+# `version` tracks the chart; bump on template/values changes.
+version: 0.1.0
+# `appVersion` tracks the Hammurabi binary; CI stamps this at release.
+appVersion: "0.1.0"
+keywords:
+  - github
+  - ai
+  - agent
+  - claude
+  - gemini
+  - codex
+  - discord
+home: https://github.com/hydai/hammurabi
+sources:
+  - https://github.com/hydai/hammurabi
+maintainers:
+  - name: hydai
+    email: z54981220@gmail.com
+annotations:
+  artifacthub.io/changes: |
+    - Initial chart release.

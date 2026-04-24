@@ -1,0 +1,38 @@
+---
+# hammurabi.toml as a ConfigMap. Edit this file (or apply your own)
+# before `kubectl apply`. Tokens come from the Secret via ${VAR}
+# interpolation (envFrom → process env → expand_str funnel); file-based
+# secrets use the *_file sibling fields instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hammurabi-config
+  labels:
+    app.kubernetes.io/name: hammurabi
+data:
+  hammurabi.toml: |
+    poll_interval = 60
+    tracking_label = "hammurabi"
+    approvers = ["REPLACE_WITH_GITHUB_USERNAME"]
+    ai_model = "claude-sonnet-4-5"
+    agent_kind = "acp_claude"
+
+    # Env-var interpolation: GITHUB_TOKEN comes from the Secret via
+    # envFrom in the Deployment.
+    github_token = "${GITHUB_TOKEN}"
+
+    # Alternative to github_token: mount as a file via the projected
+    # Secret volume and uncomment the line below (remove github_token):
+    # github_token_file = "/var/run/secrets/hammurabi/github_token"
+
+    [[repos]]
+    repo = "OWNER/REPO"
+    approvers = ["REPLACE_WITH_GITHUB_USERNAME"]
+
+    # Optional: Discord intake source.
+    # [[sources]]
+    # kind = "discord"
+    # channel_id = "1234567890"
+    # repo = "OWNER/REPO"
+    # bot_token_file = "/var/run/secrets/hammurabi/discord_bot_token"
+    # allow_users = ["REPLACE_WITH_DISCORD_USERNAME"]

@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# `kubectl apply -k deploy/k8s/` applies all four manifests in order.
+# See the Helm chart at deploy/helm/hammurabi/ for a values-driven
+# alternative.
+resources:
+  - configmap.yaml
+  - secret.yaml
+  - pvc.yaml
+  - deployment.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: hammurabi
+      app.kubernetes.io/managed-by: kustomize

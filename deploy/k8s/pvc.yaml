@@ -1,0 +1,28 @@
+---
+# One PVC holds everything: the SQLite state machine, the bare git clone
+# (shared across all worktrees via git-worktree hardlinks), the active
+# worktrees themselves, the PID lock file, and the ephemeral askpass
+# script. Splitting these across two PVCs would duplicate the pack data.
+#
+# Sizing guidance: 5 Gi covers one small repo; 20 Gi fits a handful of
+# active repos comfortably; bump to 50–100 Gi for fleet-scale use.
+#
+# ReadWriteOnce is forced by the `strategy: Recreate` Deployment shape —
+# exactly one pod ever mounts this volume at a time.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hammurabi-data
+  labels:
+    app.kubernetes.io/name: hammurabi
+  # Uncomment to survive Helm uninstall / kubectl delete:
+  # annotations:
+  #   helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # Uncomment and set if your cluster has a non-default StorageClass:
+  # storageClassName: standard

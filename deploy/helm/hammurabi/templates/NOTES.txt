@@ -1,0 +1,34 @@
+Hammurabi {{ .Chart.AppVersion }} has been installed.
+
+Release:  {{ .Release.Name }}
+Agent:    {{ .Values.agent }}
+Image:    {{ include "hammurabi.image" . }}
+
+Follow the daemon:
+
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -f
+
+Show tracked issues (runs in the live pod):
+
+  kubectl exec -n {{ .Release.Namespace }} deploy/{{ .Release.Name }} -- hammurabi status
+
+Rotate a token (kubectl replaces the Secret; the pod restarts at the
+next graceful deploy — Hammurabi re-reads the config every poll cycle):
+
+  kubectl edit secret -n {{ .Release.Namespace }} {{ include "hammurabi.secretName" . }}
+  kubectl rollout restart deploy/{{ .Release.Name }} -n {{ .Release.Namespace }}
+
+Reset state (will delete the PVC data — irreversible):
+
+  kubectl delete pvc -n {{ .Release.Namespace }} {{ .Release.Name }}-data
+  kubectl rollout restart deploy/{{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if eq .Values.config.raw "" }}
+{{- if ne .Values.config.url "" }}
+
+Using a REMOTE config from:  {{ .Values.config.url }}
+  Bootstrap stub ConfigMap is mounted at /etc/hammurabi/hammurabi.toml;
+  the real config is fetched at startup. Make sure the URL stays
+  reachable or the daemon will fall back to its last-known config.
+{{- end }}
+{{- end }}

@@ -1,0 +1,99 @@
+---
+# Singleton Hammurabi daemon. Exactly one replica: the PID lock file and
+# SQLite database under /var/lib/hammurabi are exclusive to one process,
+# and rolling updates on a RWO PVC would deadlock. `strategy: Recreate`
+# trades the brief downtime during upgrades for correctness.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hammurabi
+  labels:
+    app.kubernetes.io/name: hammurabi
+    app.kubernetes.io/component: daemon
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hammurabi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hammurabi
+        app.kubernetes.io/component: daemon
+    spec:
+      # 30 s matches tokio's shutdown drain; the Hammurabi signal handler
+      # exits on the second signal (exit 130) if work is stuck, and the
+      # K8s kubelet will SIGKILL after this grace period regardless.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hammurabi
+          # Swap the variant suffix (claude | gemini | codex | base) to
+          # match your configured agent_kind.
+          image: ghcr.io/OWNER/hammurabi-claude:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          # Inject tokens as environment variables so the rendered
+          # hammurabi.toml can reference them via ${VAR} interpolation.
+          # Files-on-disk (see volumeMounts below) are an alternative for
+          # operators who prefer *_file fields instead.
+          envFrom:
+            - secretRef:
+                name: hammurabi-secrets
+                optional: false
+          env:
+            - name: RUST_LOG
+              value: info
+          volumeMounts:
+            - name: config
+              mountPath: /etc/hammurabi
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/hammurabi
+            - name: secrets-files
+              mountPath: /var/run/secrets/hammurabi
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          # pgrep-based liveness mirrors the Dockerfile HEALTHCHECK.
+          # Disabled by default because a daemon mid-long-ACP-call should
+          # not be killed; re-enable for deployments where you want K8s
+          # to recover the pod on process crash.
+          # livenessProbe:
+          #   exec:
+          #     command: ["pgrep", "-x", "hammurabi"]
+          #   initialDelaySeconds: 60
+          #   periodSeconds: 60
+          #   failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: hammurabi-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: hammurabi-data
+        # `*_file` fields point here when operators prefer Secret-as-file.
+        # Each key in hammurabi-secrets becomes a file at
+        # /var/run/secrets/hammurabi/<key>, mode 0400.
+        - name: secrets-files
+          secret:
+            secretName: hammurabi-secrets
+            defaultMode: 0400
+        # readOnlyRootFilesystem needs a writable /tmp for git + npm
+        # temp writes. Askpass script lives inside /var/lib/hammurabi
+        # (the PVC), so /tmp only needs modest space.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 500Mi

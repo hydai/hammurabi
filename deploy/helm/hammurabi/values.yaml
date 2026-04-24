@@ -1,0 +1,151 @@
+# --- Agent selection ---------------------------------------------------------
+#
+# Which agent CLI is baked into the image. Also gets templated into
+# hammurabi.toml's `agent_kind` field unless `config.raw` overrides it.
+#
+#   claude     → image: hammurabi-claude (covers both claude_cli and
+#                acp_claude)
+#   acp_claude → same image as `claude`
+#   acp_gemini → image: hammurabi-gemini
+#   acp_codex  → image: hammurabi-codex
+#   none       → image: hammurabi-base (bring your own agent binary)
+agent: acp_claude
+
+# --- Image ------------------------------------------------------------------
+image:
+  registry: ghcr.io
+  # If `repository` is unset, the chart infers it from `.agent`:
+  #   claude/acp_claude → ghcr.io/hydai/hammurabi-claude
+  #   acp_gemini       → ghcr.io/hydai/hammurabi-gemini
+  #   acp_codex        → ghcr.io/hydai/hammurabi-codex
+  #   none             → ghcr.io/hydai/hammurabi-base
+  repository: ""
+  # Empty tag → falls back to Chart.appVersion at render time.
+  tag: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# --- Persistence ------------------------------------------------------------
+#
+# Holds the SQLite state machine, the bare git clone, worktrees, and the
+# PID lock. RWO is mandatory (singleton deployment).
+persistence:
+  enabled: true
+  storageClass: ""
+  size: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  # `keep` annotation preserves the PVC across `helm uninstall`. Flip to
+  # false only if you're okay losing all tracking state on uninstall.
+  preserveOnUninstall: true
+
+# --- Config ----------------------------------------------------------------
+#
+# Exactly one of `config.raw` and `config.url` must be set.
+#
+# - `config.raw`: literal TOML, templated through Helm's `tpl` so you can
+#   use `{{ .Values.agent }}` etc. inside it.
+# - `config.url`: remote https:// URL fetched by the daemon on startup
+#   and each poll cycle (1 MiB cap, 30 s total timeout).
+config:
+  raw: |
+    poll_interval = 60
+    tracking_label = "hammurabi"
+    approvers = ["REPLACE_WITH_GITHUB_USERNAME"]
+    ai_model = "claude-sonnet-4-5"
+    agent_kind = "{{ .Values.agent }}"
+
+    # Prefer *_file fields over ${VAR} so tokens never touch process env.
+    github_token_file = "/var/run/secrets/hammurabi/github_token"
+
+    [[repos]]
+    repo = "OWNER/REPO"
+    approvers = ["REPLACE_WITH_GITHUB_USERNAME"]
+  url: ""
+
+# --- Secrets ---------------------------------------------------------------
+#
+# Two injection paths, both active simultaneously:
+#   1. envFrom → secretRef  → env vars available for `${VAR}` in the TOML
+#   2. projected volume    → files at /var/run/secrets/hammurabi/<key>
+#                             available for `*_file` fields in the TOML
+#
+# Use whichever your rendered config references.
+secrets:
+  # When false, the chart references an externally-managed Secret named
+  # `existingSecret` instead of creating one.
+  create: true
+  existingSecret: ""
+  # Each key becomes both an env var (upper-case env style) and a file
+  # (/var/run/secrets/hammurabi/<key> lowercase).
+  data:
+    github_token: "REPLACE_ME_ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    # discord_bot_token: "REPLACE_ME_discord_bot_token"
+    # anthropic_api_key: "REPLACE_ME_sk-ant-..."
+  # `keep` annotation preserves the Secret across uninstall.
+  preserveOnUninstall: true
+
+# --- Pod + container config -----------------------------------------------
+resources: {}
+  # Example sizing for a small deployment:
+  # requests:
+  #   cpu: 100m
+  #   memory: 256Mi
+  # limits:
+  #   cpu: 1000m
+  #   memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# Extra env injected into the container. Layered on top of envFrom Secret.
+extraEnv: []
+  # - name: HAMMURABI_SECRETS_STRICT
+  #   value: "1"
+
+# Extra envFrom entries (e.g. an additional Secret for ANTHROPIC_API_KEY).
+extraEnvFrom: []
+  # - secretRef:
+  #     name: hammurabi-ai-keys
+
+terminationGracePeriodSeconds: 30
+
+# --- Probes ---------------------------------------------------------------
+#
+# Off by default: the Dockerfile HEALTHCHECK plus the kubelet's OOM/crash
+# recovery are sufficient. A `pgrep` liveness probe on a daemon mid-AI-call
+# risks false-positive kills. Set `enabled: true` if you want K8s to
+# recover the pod on process crash.
+livenessProbe:
+  enabled: false
+  exec:
+    command:
+      - pgrep
+      - -x
+      - hammurabi
+  initialDelaySeconds: 60
+  periodSeconds: 60
+  failureThreshold: 3
+  timeoutSeconds: 5
+
+# --- Security -------------------------------------------------------------
+securityContext:
+  pod:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  container:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+
+# /tmp is required because readOnlyRootFilesystem is true.
+tmpEmptyDirSizeLimit: 500Mi
