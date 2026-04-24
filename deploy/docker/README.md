@@ -9,16 +9,16 @@ docker build -f deploy/docker/Dockerfile.claude -t hammurabi-claude:dev .
 
 ## Variants
 
-| Image                     | Base                     | Agents served                            | Use case                                                                    |
-| ------------------------- | ------------------------ | ---------------------------------------- | --------------------------------------------------------------------------- |
-| `hammurabi-base`          | `debian:bookworm-slim`   | none (bring your own agent binary)       | Custom agent installs via `FROM hammurabi-base`, or pure-GitHub-only setups |
-| `hammurabi-claude`        | `node:22-bookworm-slim`  | `agent_kind = "claude_cli" \| "acp_claude"` | Default for Claude-backed deployments                                       |
-| `hammurabi-gemini`        | `node:22-bookworm-slim`  | `agent_kind = "acp_gemini"`              | Gemini via `gemini --acp`                                                   |
-| `hammurabi-codex`         | `node:22-bookworm-slim`  | `agent_kind = "acp_codex"`               | Codex via `codex-acp` wrapper                                               |
+| Image                     | Base                     | Agents served                                  | Use case                                                                    |
+| ------------------------- | ------------------------ | ---------------------------------------------- | --------------------------------------------------------------------------- |
+| `hammurabi-base`          | `debian:bookworm-slim`   | none (bring your own agent binary)             | Custom agent installs via `FROM hammurabi-base`, or pure-GitHub-only setups |
+| `hammurabi-claude`        | `node:22-bookworm-slim`  | `agent_kind = "claude-cli" \| "acp-claude"`    | Default for Claude-backed deployments                                       |
+| `hammurabi-gemini`        | `node:22-bookworm-slim`  | `agent_kind = "acp-gemini"`                    | Gemini via `gemini --acp`                                                   |
+| `hammurabi-codex`         | `node:22-bookworm-slim`  | `agent_kind = "acp-codex"`                     | Codex via `codex-acp` wrapper                                               |
 
 Notes:
 
-- The **claude variant merges `claude_cli` and `acp_claude`** because both
+- The **claude variant merges `claude-cli` and `acp-claude`** because both
   dispatch modes resolve the same `/usr/local/bin/claude` binary on PATH.
   Switching between the two is a config-file change, not an image change.
 - Every image sets `CLAUDE_CODE_EXECUTABLE=/usr/local/bin/claude` (the claude
@@ -104,7 +104,7 @@ stays non-root.
 
 ## Hooks in containers
 
-`[hooks]` scripts run under `bash -c`. The image ships `bash`, `git`, `gh`,
-`ripgrep`, and `curl` — stick to those or add tools via `FROM`. Hooks
-inherit the daemon's full environment, **including** `GITHUB_TOKEN` and
-Discord bot tokens; treat them accordingly.
+`[hooks]` scripts run under `sh -c` with the worktree directory as CWD. The
+image ships `bash`, `git`, `gh`, `ripgrep`, and `curl` — stick to those or
+add tools via `FROM`. Hooks inherit the daemon's full environment,
+**including** `GITHUB_TOKEN` and Discord bot tokens; treat them accordingly.

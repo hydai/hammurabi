@@ -19,14 +19,16 @@
 # (e.g. HAMMURABI_POLL_INTERVAL=30). Mutable state lives under
 # HAMMURABI_DATA_DIR or --data-dir (default: ./.hammurabi).
 
-# GitHub repository to monitor (required)
+# GitHub repository to monitor (required unless [[repos]] is used below).
+# For monitoring multiple repos, omit this line and use the [[repos]] array
+# near the bottom of the file instead.
 repo = "owner/repo"
 
 # Seconds between poll cycles (default: 60)
 # poll_interval = 60
 
-# Maximum parallel AI agent invocations (default: 3)
-# max_concurrent_agents = 3
+# Maximum parallel AI agent invocations (default: 5)
+# max_concurrent_agents = 5
 
 # GitHub label that opts issues into daemon tracking (default: "hammurabi")
 # tracking_label = "hammurabi"
@@ -46,6 +48,11 @@ ai_model = "claude-sonnet-4-6"
 # Default effort level for AI reasoning depth (default: "high")
 # Options: "low", "medium", "high", "max"
 # ai_effort = "high"
+
+# Maximum self-review iterations before the agent stops revising (default: 2)
+# A value of 1 disables the Reviewing feedback loop. Global default; can also
+# be overridden per [[repos]] entry.
+# review_max_iterations = 2
 
 # GitHub usernames authorized to approve (required)
 approvers = ["your-github-username"]
@@ -72,21 +79,34 @@ approvers = ["your-github-username"]
 # # private_key_file is an accepted alias for private_key_path.
 # installation_id = 78901234
 
-# Per-task AI overrides (optional)
+# Per-task AI overrides (optional). Valid task names: `spec`, `implement`,
+# `review`. Unknown table names are silently ignored.
 # [spec]
 # ai_model = "claude-opus-4-6"
 # ai_max_turns = 100
-# ai_effort = "high"
-
-# [decompose]
-# ai_model = "claude-sonnet-4-6"
-# ai_max_turns = 30
 # ai_effort = "high"
 
 # [implement]
 # ai_model = "claude-sonnet-4-6"
 # ai_max_turns = 50
 # ai_effort = "high"
+
+# [review]
+# ai_model = "claude-sonnet-4-6"
+# ai_max_turns = 30
+# ai_effort = "medium"
+
+# Workspace lifecycle hooks (optional). Each script runs under `sh -c` with
+# the worktree directory as its CWD, and inherits the daemon's environment
+# (including GITHUB_TOKEN). Non-zero exit from `after_create` or `before_run`
+# is fatal (issue transitions to Failed); `after_run` and `before_remove`
+# failures are logged but non-fatal. `timeout_secs` defaults to 60.
+# [hooks]
+# after_create = "git config user.email 'bot@example.com'"
+# before_run   = "cargo fetch"
+# after_run    = "../scripts/post-run-lint.sh"
+# before_remove = "../scripts/archive-logs.sh"
+# timeout_secs = 60
 
 # ---------------------------------------------------------------------------
 # Agent selection (ACP)
@@ -149,6 +169,29 @@ approvers = ["your-github-username"]
 #     issue, collapsed under <details> once the run finishes.
 #   - Hammurabi auto-approves every `session/request_permission` the agent
 #     emits, matching the existing `--dangerously-skip-permissions` posture.
+
+# ---------------------------------------------------------------------------
+# Multi-repository setup
+# ---------------------------------------------------------------------------
+#
+# Instead of the single top-level `repo = "owner/repo"` line above, declare
+# one `[[repos]]` block per repository. Each inherits global settings
+# (ai_model, approvers, tracking_label, agent_kind, ...) but may override
+# any of them locally.
+#
+# [[repos]]
+# repo = "acme/server"
+# # Optional per-repo overrides (any scalar from the global section):
+# # tracking_label = "auto"
+# # approvers = ["alice", "bob"]
+# # agent_kind = "acp-claude"
+# # review_max_iterations = 3
+# # [[repos]] blocks may also carry nested [hooks], [spec], [implement],
+# # [review] tables with the same shape as their global counterparts.
+#
+# [[repos]]
+# repo = "acme/client"
+# agent_kind = "acp-gemini"
 
 # ---------------------------------------------------------------------------
 # Alternative intake sources (Discord, ...)
