@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+#[path = "../src/acp/mod.rs"]
+mod acp;
 #[path = "../src/agents/mod.rs"]
 mod agents;
 #[path = "../src/approval.rs"]

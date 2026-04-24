@@ -144,11 +144,9 @@ impl Session {
     async fn send_line(&self, line: &str) -> Result<(), HammurabiError> {
         tracing::debug!(line = line, "acp_send");
         let mut w = self.stdin.lock().await;
-        w.write_all(line.as_bytes())
-            .await
-            .map_err(HammurabiError::Io)?;
-        w.write_all(b"\n").await.map_err(HammurabiError::Io)?;
-        w.flush().await.map_err(HammurabiError::Io)?;
+        write_all_or_map_closed(&mut w, line.as_bytes()).await?;
+        write_all_or_map_closed(&mut w, b"\n").await?;
+        w.flush().await.map_err(map_closed)?;
         Ok(())
     }
 
@@ -338,6 +336,22 @@ impl Drop for Session {
     }
 }
 
+/// Write all bytes; remap broken-pipe / unexpected-EOF into a semantic
+/// ACP "connection closed" error so callers can distinguish agent death
+/// from generic IO failures.
+async fn write_all_or_map_closed(w: &mut ChildStdin, bytes: &[u8]) -> Result<(), HammurabiError> {
+    w.write_all(bytes).await.map_err(map_closed)
+}
+
+fn map_closed(e: std::io::Error) -> HammurabiError {
+    match e.kind() {
+        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof => {
+            HammurabiError::Acp("ACP connection closed".to_string())
+        }
+        _ => HammurabiError::Io(e),
+    }
+}
+
 /// Spawn the background reader task. Its job:
 ///
 /// 1. Parse every incoming frame.
@@ -395,12 +409,20 @@ fn spawn_reader(
                 IncomingMessage::Response { id, outcome } => {
                     if let Some(tx) = pending.lock().await.remove(&id) {
                         // Publish a synthetic completion notification so a
-                        // streaming prompt consumer can detect end-of-turn.
+                        // streaming prompt consumer can detect end-of-turn
+                        // and extract usage stats without needing a second
+                        // channel.
                         if let Some(n) = notify_tx.lock().await.as_ref() {
+                            let params = match &outcome {
+                                Ok(v) => Some(serde_json::json!({"result": v})),
+                                Err(e) => Some(serde_json::json!({
+                                    "error": {"code": e.code, "message": e.message}
+                                })),
+                            };
                             let completion = Notification {
                                 jsonrpc: super::wire::JSONRPC_VERSION,
                                 method: format!("__prompt_completion:{id}"),
-                                params: None,
+                                params,
                             };
                             let _ = n.send(completion);
                         }

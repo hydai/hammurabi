@@ -4,6 +4,7 @@
 //! live in sibling modules. Today: `claude_cli` (the Claude CLI). Future
 //! additions (ACP etc.) plug in as further implementations of `AiAgent`.
 
+pub mod acp;
 pub mod claude_cli;
 pub mod registry;
 
@@ -25,6 +26,22 @@ pub enum AgentKind {
     /// Claude CLI (`claude --print --output-format stream-json ...`).
     #[default]
     ClaudeCli,
+    /// ACP agent running `claude-agent-acp` (npm adapter).
+    AcpClaude,
+    /// ACP agent running `gemini --acp`.
+    AcpGemini,
+    /// ACP agent running `codex-acp` (npm adapter).
+    AcpCodex,
+}
+
+impl AgentKind {
+    /// Is this kind served by the ACP adapter?
+    pub fn is_acp(self) -> bool {
+        matches!(
+            self,
+            AgentKind::AcpClaude | AgentKind::AcpGemini | AgentKind::AcpCodex
+        )
+    }
 }
 
 /// Status of a tool invocation reported by the agent.

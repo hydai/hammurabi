@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::agents::acp::AcpAgent;
 use crate::agents::{AgentKind, AgentRegistry, AiAgent, ClaudeCliAgent};
 use crate::approval::{self, CommentApprovalResult, PrApprovalResult};
 use crate::config::{self, GitHubAuth};
@@ -19,12 +20,25 @@ use crate::worktree::{
     AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager,
 };
 
-/// Build the global agent registry. Phase 2 registers only the Claude CLI
-/// under `AgentKind::ClaudeCli`; Phase 4 will add ACP kinds.
+/// Build the global agent registry. Registers every supported agent kind
+/// with its default invocation; Phase 5 will let users override the ACP
+/// definitions via config.
 fn build_agent_registry() -> AgentRegistry {
     let mut map: std::collections::HashMap<AgentKind, Arc<dyn AiAgent>> =
         std::collections::HashMap::new();
     map.insert(AgentKind::ClaudeCli, Arc::new(ClaudeCliAgent::new()));
+    map.insert(
+        AgentKind::AcpClaude,
+        Arc::new(AcpAgent::with_defaults(AgentKind::AcpClaude)),
+    );
+    map.insert(
+        AgentKind::AcpGemini,
+        Arc::new(AcpAgent::with_defaults(AgentKind::AcpGemini)),
+    );
+    map.insert(
+        AgentKind::AcpCodex,
+        Arc::new(AcpAgent::with_defaults(AgentKind::AcpCodex)),
+    );
     AgentRegistry::new(map)
 }
 

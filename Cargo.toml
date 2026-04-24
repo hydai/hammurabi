@@ -25,3 +25,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.dev.package."*"]
 debug = false
+
+# Primary daemon binary. Listed explicitly so the test-support binary below
+# can coexist without Cargo emitting default-run ambiguity warnings.
+[[bin]]
+name = "hammurabi"
+path = "src/main.rs"
+
+# Test-support binary: a scripted fake ACP agent driven via stdio. Exposed
+# to integration tests through the CARGO_BIN_EXE_fake-acp-agent env var.
+[[bin]]
+name = "fake-acp-agent"
+path = "tests/support/fake_acp_agent/main.rs"
+test = false
+doctest = false
