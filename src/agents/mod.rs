@@ -44,6 +44,26 @@ pub struct ToolInvocation {
     pub status: ToolStatus,
 }
 
+/// A streaming event surfaced during an agent run.
+///
+/// `ClaudeCliAgent` does not produce these (its output is collected whole);
+/// the ACP adapter forwards them from `session/update` notifications.
+/// Wired into `AiInvocation.events` in Phase 7.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum AgentEvent {
+    /// Free-form text delta from the agent.
+    TextDelta(String),
+    /// Agent is thinking (no content yet).
+    Thinking,
+    /// A tool call started (or its metadata was refined).
+    ToolStarted { id: String, title: String },
+    /// A tool call finished. `ok=false` means the tool itself failed.
+    ToolFinished { id: String, title: String, ok: bool },
+    /// Agent acknowledged a config option change (e.g. model switch).
+    ConfigChanged { option_id: String, value: String },
+}
+
 /// Input to [`AiAgent::invoke`].
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

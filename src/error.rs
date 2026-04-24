@@ -17,6 +17,9 @@ pub enum HammurabiError {
     #[error("AI agent timeout: {0}")]
     AiTimeout(String),
 
+    #[error("ACP protocol error: {0}")]
+    Acp(String),
+
     #[error("worktree error: {0}")]
     Worktree(String),
 
