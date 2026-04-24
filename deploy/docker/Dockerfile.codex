@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Hammurabi + OpenAI Codex CLI + codex-acp wrapper.
-# Serves agent_kind = "acp_codex".
+# Serves agent_kind = "acp-codex".
 
 ARG RUST_VERSION=1
 ARG DEBIAN_CODENAME=bookworm

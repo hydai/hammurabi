@@ -9,7 +9,7 @@ From a local checkout:
 ```bash
 helm install hammurabi deploy/helm/hammurabi \
   --namespace hammurabi --create-namespace \
-  --set agent=acp_claude \
+  --set agent=acp-claude \
   --set secrets.data.github_token=ghp_xxxxx
 ```
 
@@ -26,7 +26,7 @@ helm install hammurabi oci://ghcr.io/hydai/charts/hammurabi \
 
 | Key                       | Default         | Purpose                                                                              |
 | ------------------------- | --------------- | ------------------------------------------------------------------------------------ |
-| `agent`                   | `acp_claude`    | `claude` / `acp_claude` / `acp_gemini` / `acp_codex` / `none`. Drives image inference + rendered `agent_kind`. |
+| `agent`                   | `acp-claude`    | `claude-cli` / `acp-claude` / `acp-gemini` / `acp-codex` / `none`. Kebab-case values matching `AgentKind`; drives image inference + rendered `agent_kind`. |
 | `image.repository`        | auto-inferred   | Override to pull from a non-default registry/org.                                    |
 | `image.tag`               | `.Chart.AppVersion` | Image tag to deploy.                                                             |
 | `persistence.size`        | `20Gi`          | PVC size. Bump for fleet-scale use.                                                  |

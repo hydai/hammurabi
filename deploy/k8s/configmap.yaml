@@ -15,7 +15,7 @@ data:
     tracking_label = "hammurabi"
     approvers = ["REPLACE_WITH_GITHUB_USERNAME"]
     ai_model = "claude-sonnet-4-5"
-    agent_kind = "acp_claude"
+    agent_kind = "acp-claude"
 
     # Env-var interpolation: GITHUB_TOKEN comes from the Secret via
     # envFrom in the Deployment.

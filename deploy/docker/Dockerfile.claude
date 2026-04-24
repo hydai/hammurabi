@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Hammurabi + Claude CLI + claude-agent-acp.
 #
-# Serves both agent_kind = "claude_cli" and agent_kind = "acp_claude"
+# Serves both agent_kind = "claude-cli" and agent_kind = "acp-claude"
 # because both dispatch modes resolve the same `claude` binary on PATH;
 # the ACP wrapper adds a tiny JSON-RPC shim on top.
 
@@ -47,8 +47,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Claude CLI + ACP wrapper. Installing both lets the image cover both
-# agent_kind = "claude_cli" (plain stream-json output) and
-# agent_kind = "acp_claude" (JSON-RPC over stdio via claude-agent-acp).
+# agent_kind = "claude-cli" (plain stream-json output) and
+# agent_kind = "acp-claude" (JSON-RPC over stdio via claude-agent-acp).
 # The ACP wrapper lives under the @agentclientprotocol scope; the binary
 # installed on PATH is still plain `claude-agent-acp`, which matches
 # default_agent_def(AgentKind::AcpClaude) in src/agents/acp.rs.

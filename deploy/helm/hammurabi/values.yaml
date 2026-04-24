@@ -1,24 +1,26 @@
 # --- Agent selection ---------------------------------------------------------
 #
-# Which agent CLI is baked into the image. Also gets templated into
-# hammurabi.toml's `agent_kind` field unless `config.raw` overrides it.
+# Which agent CLI is baked into the image. This value is rendered directly
+# into hammurabi.toml's `agent_kind` field (unless `config.raw` overrides
+# it), so it must match the AgentKind enum in src/agents/mod.rs. All values
+# are kebab-case.
 #
-#   claude     → image: hammurabi-claude (covers both claude_cli and
-#                acp_claude)
-#   acp_claude → same image as `claude`
-#   acp_gemini → image: hammurabi-gemini
-#   acp_codex  → image: hammurabi-codex
-#   none       → image: hammurabi-base (bring your own agent binary)
-agent: acp_claude
+#   claude-cli → image: hammurabi-claude (Claude CLI native driver)
+#   acp-claude → image: hammurabi-claude (ACP via claude-agent-acp)
+#   acp-gemini → image: hammurabi-gemini
+#   acp-codex  → image: hammurabi-codex
+#   none       → image: hammurabi-base (bring your own agent binary;
+#                you must set config.raw yourself)
+agent: acp-claude
 
 # --- Image ------------------------------------------------------------------
 image:
   registry: ghcr.io
   # If `repository` is unset, the chart infers it from `.agent`:
-  #   claude/acp_claude → ghcr.io/hydai/hammurabi-claude
-  #   acp_gemini       → ghcr.io/hydai/hammurabi-gemini
-  #   acp_codex        → ghcr.io/hydai/hammurabi-codex
-  #   none             → ghcr.io/hydai/hammurabi-base
+  #   claude-cli / acp-claude → ghcr.io/hydai/hammurabi-claude
+  #   acp-gemini              → ghcr.io/hydai/hammurabi-gemini
+  #   acp-codex               → ghcr.io/hydai/hammurabi-codex
+  #   none                    → ghcr.io/hydai/hammurabi-base
   repository: ""
   # Empty tag → falls back to Chart.appVersion at render time.
   tag: ""

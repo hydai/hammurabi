@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # Hammurabi + Google Gemini CLI (ACP mode).
-# Serves agent_kind = "acp_gemini".
+# Serves agent_kind = "acp-gemini".
 
 ARG RUST_VERSION=1
 ARG DEBIAN_CODENAME=bookworm

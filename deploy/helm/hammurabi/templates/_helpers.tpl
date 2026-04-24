@@ -1,19 +1,21 @@
-{{/* Resolved image reference (repository:tag). */}}
+{{/* Resolved image reference (repository:tag). The `.Values.agent` value
+     is the same kebab-case string that Hammurabi's hammurabi.toml uses for
+     its `agent_kind` field (see src/agents/mod.rs AgentKind). */}}
 {{- define "hammurabi.image" -}}
 {{- $registry := .Values.image.registry | default "ghcr.io" -}}
 {{- $repo := .Values.image.repository -}}
 {{- if eq $repo "" -}}
   {{- $suffix := "" -}}
-  {{- if or (eq .Values.agent "claude") (eq .Values.agent "acp_claude") -}}
+  {{- if or (eq .Values.agent "claude-cli") (eq .Values.agent "acp-claude") -}}
     {{- $suffix = "-claude" -}}
-  {{- else if eq .Values.agent "acp_gemini" -}}
+  {{- else if eq .Values.agent "acp-gemini" -}}
     {{- $suffix = "-gemini" -}}
-  {{- else if eq .Values.agent "acp_codex" -}}
+  {{- else if eq .Values.agent "acp-codex" -}}
     {{- $suffix = "-codex" -}}
   {{- else if eq .Values.agent "none" -}}
     {{- $suffix = "-base" -}}
   {{- else -}}
-    {{- fail (printf "Unknown .Values.agent %q — must be one of claude|acp_claude|acp_gemini|acp_codex|none" .Values.agent) -}}
+    {{- fail (printf "Unknown .Values.agent %q — must be one of claude-cli|acp-claude|acp-gemini|acp-codex|none" .Values.agent) -}}
   {{- end -}}
   {{- $repo = printf "hydai/hammurabi%s" $suffix -}}
 {{- end -}}
