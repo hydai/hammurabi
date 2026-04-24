@@ -281,7 +281,7 @@ Four image variants, one per supported `agent_kind`:
 | Image                          | Bundled agent CLI                              | Covers `agent_kind`               |
 | ------------------------------ | ---------------------------------------------- | --------------------------------- |
 | `ghcr.io/hydai/hammurabi-base`   | none (extend via `FROM`)                       | any, once you install an agent    |
-| `ghcr.io/hydai/hammurabi-claude` | `@anthropic-ai/claude-code` + `claude-agent-acp` | `claude_cli`, `acp_claude`        |
+| `ghcr.io/hydai/hammurabi-claude` | `@anthropic-ai/claude-code` + `@agentclientprotocol/claude-agent-acp` | `claude_cli`, `acp_claude`        |
 | `ghcr.io/hydai/hammurabi-gemini` | `@google/gemini-cli`                           | `acp_gemini`                      |
 | `ghcr.io/hydai/hammurabi-codex`  | `@openai/codex` + `@zed-industries/codex-acp`  | `acp_codex`                       |
 
