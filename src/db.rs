@@ -361,6 +361,123 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Insert a Discord-sourced issue. `thread_id` is the Discord thread
+    /// snowflake; it becomes the `external_id`. `github_issue_number` is
+    /// set to `0` as a sentinel for "not yet assigned" — it will be
+    /// populated when the spec is `/confirm`ed and the GitHub issue is
+    /// opened. Returns the new DB row id, or the existing row's id if a
+    /// row already exists for this thread.
+    pub fn insert_discord_thread(
+        &self,
+        repo: &str,
+        thread_id: u64,
+        title: &str,
+    ) -> Result<i64, HammurabiError> {
+        let conn = self.conn();
+        let external_id = thread_id.to_string();
+        conn.execute(
+                "INSERT OR IGNORE INTO issues (source, external_id, repo, github_issue_number, github_issue_title) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    SourceKind::Discord.as_str(),
+                    external_id,
+                    repo,
+                    0_i64,
+                    title,
+                ],
+            )
+            .map_err(db_err)?;
+        // last_insert_rowid returns 0 on OR IGNORE no-op; look up the row in that case.
+        let id = conn.last_insert_rowid();
+        if id > 0 {
+            Ok(id)
+        } else {
+            let existing: i64 = conn
+                .query_row(
+                    "SELECT id FROM issues WHERE source = ?1 AND repo = ?2 AND external_id = ?3",
+                    params![SourceKind::Discord.as_str(), repo, external_id],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)?;
+            Ok(existing)
+        }
+    }
+
+    /// Look up a Discord-sourced issue by its thread snowflake.
+    pub fn get_discord_issue(
+        &self,
+        repo: &str,
+        thread_id: u64,
+    ) -> Result<Option<TrackedIssue>, HammurabiError> {
+        let conn = self.conn();
+        let sql = select_issues("source = ?1 AND repo = ?2 AND external_id = ?3");
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let result = stmt
+            .query_row(
+                params![SourceKind::Discord.as_str(), repo, thread_id.to_string(),],
+                row_to_tracked_issue,
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(result)
+    }
+
+    /// Populate `github_issue_number` after a Discord thread's spec is
+    /// `/confirm`ed and a GitHub issue is opened. No-op if the row already
+    /// has a non-zero issue number.
+    pub fn set_issue_github_number(
+        &self,
+        id: i64,
+        github_issue_number: u64,
+    ) -> Result<(), HammurabiError> {
+        self.conn()
+            .execute(
+                "UPDATE issues SET github_issue_number = ?1, updated_at = datetime('now') WHERE id = ?2",
+                params![github_issue_number as i64, id],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Fetch a single tracked issue by primary key. Unlike `get_issue`,
+    /// this ignores `source` — callers who already hold a `TrackedIssue`
+    /// use it to refresh their copy from the DB after state updates.
+    pub fn get_issue_by_id(&self, id: i64) -> Result<Option<TrackedIssue>, HammurabiError> {
+        let conn = self.conn();
+        let sql = select_issues("id = ?1");
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let result = stmt
+            .query_row(params![id], row_to_tracked_issue)
+            .optional()
+            .map_err(db_err)?;
+        Ok(result)
+    }
+
+    /// Look up any row (GitHub- or Discord-sourced) that has the given
+    /// `github_issue_number` in `repo`. Used by the GitHub discovery loop
+    /// to avoid double-tracking an issue that was opened by a Discord
+    /// `/confirm` flow — the Discord row already carries the issue
+    /// number after `set_issue_github_number`.
+    pub fn get_issue_by_github_number_any_source(
+        &self,
+        repo: &str,
+        github_issue_number: u64,
+    ) -> Result<Option<TrackedIssue>, HammurabiError> {
+        if github_issue_number == 0 {
+            return Ok(None);
+        }
+        let conn = self.conn();
+        let sql = select_issues("repo = ?1 AND github_issue_number = ?2");
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let result = stmt
+            .query_row(
+                params![repo, github_issue_number as i64],
+                row_to_tracked_issue,
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(result)
+    }
+
     pub fn get_issue(
         &self,
         repo: &str,

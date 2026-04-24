@@ -95,6 +95,7 @@ async fn test_retry_after_spec_failure() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
+        discord: None,
         publisher: std::sync::Arc::new(publisher::GithubPublisher::new(gh.clone())),
         agents: Arc::new(AgentRegistry::for_test(ai.clone())),
         worktree: wt,
@@ -182,6 +183,7 @@ async fn test_implementation_failure_and_retry() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
+        discord: None,
         publisher: std::sync::Arc::new(publisher::GithubPublisher::new(gh.clone())),
         agents: Arc::new(AgentRegistry::for_test(ai.clone())),
         worktree: wt,

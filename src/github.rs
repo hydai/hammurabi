@@ -832,15 +832,28 @@ pub mod mock {
             &self,
             title: &str,
             body: &str,
-            _labels: &[String],
+            labels: &[String],
         ) -> Result<u64, HammurabiError> {
             let mut next_issue = self.next_issue_number.lock().unwrap();
             let number = *next_issue;
             *next_issue += 1;
+            drop(next_issue);
             self.created_issues
                 .lock()
                 .unwrap()
                 .push((title.to_string(), body.to_string()));
+            // Mirror real GitHub: the newly-created issue becomes readable
+            // via get_issue / is_issue_open immediately. Without this,
+            // downstream transitions (e.g. implementing) can't fetch the
+            // issue they just asked to open.
+            self.issues.lock().unwrap().push(GitHubIssue {
+                number,
+                title: title.to_string(),
+                body: body.to_string(),
+                labels: labels.to_vec(),
+                state: "Open".to_string(),
+                user_login: "hammurabi-bot".to_string(),
+            });
             Ok(number)
         }
 

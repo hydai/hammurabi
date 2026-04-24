@@ -14,10 +14,12 @@ use tokio::sync::mpsc;
 use crate::agents::{AgentEvent, AgentKind, AgentRegistry, AiInvocation, AiResult};
 use crate::config::RepoConfig;
 use crate::db::Database;
+use crate::discord::DiscordClient;
 use crate::error::HammurabiError;
 use crate::github::GitHubClient;
 use crate::hooks;
-use crate::publisher::Publisher;
+use crate::models::TrackedIssue;
+use crate::publisher::{DiscordPublisher, Publisher};
 use crate::worktree::WorktreeManager;
 
 /// Convention for the per-agent instruction file seeded into the worktree
@@ -34,9 +36,14 @@ pub(crate) fn seed_filename(kind: AgentKind) -> &'static str {
 #[derive(Clone)]
 pub struct TransitionContext {
     pub github: Arc<dyn GitHubClient>,
-    /// Source-agnostic progress publisher. For GitHub-originated issues
-    /// this is a `GithubPublisher` wrapping `github`; Discord-originated
-    /// issues will eventually swap in a different implementation.
+    /// Discord client for sources that route through a chat channel.
+    /// `None` when only GitHub intake is configured; `publisher_for` falls
+    /// back to GitHub-only publishing in that case.
+    pub discord: Option<Arc<dyn DiscordClient>>,
+    /// Default progress publisher — a `GithubPublisher` wrapping `github`.
+    /// Used by transitions that only run after a GitHub issue exists
+    /// (Implementing/Reviewing/AwaitPRApproval/Completion). For the
+    /// pre-`/confirm` Discord flow, callers use `publisher_for` instead.
     pub publisher: Arc<dyn Publisher>,
     pub agents: Arc<AgentRegistry>,
     pub worktree: Arc<dyn WorktreeManager>,
@@ -44,8 +51,45 @@ pub struct TransitionContext {
     pub config: Arc<RepoConfig>,
 }
 
+impl TransitionContext {
+    /// Return the `Publisher` appropriate for `issue`'s lifecycle stage.
+    ///
+    /// - Discord-sourced issues *before* `/confirm` (no `github_issue_number`
+    ///   yet) get a `DiscordPublisher` so the draft spec and status
+    ///   updates land in the thread.
+    /// - All other issues (GitHub-originated, or Discord-originated that
+    ///   have already been `/confirm`ed) get the default GitHub publisher,
+    ///   so progress lands on the GitHub issue/PR.
+    ///
+    /// Mirroring post-`/confirm` updates back to the originating Discord
+    /// thread is left as a follow-up once `MultiplexPublisher` is wired in.
+    pub(crate) fn publisher_for(&self, issue: &TrackedIssue) -> Arc<dyn Publisher> {
+        if issue.is_discord_pending() {
+            if let Some(discord) = &self.discord {
+                return Arc::new(DiscordPublisher::new(discord.clone()));
+            }
+            tracing::warn!(
+                "Discord-sourced issue but no DiscordClient in ctx; \
+                 falling back to GitHub publisher"
+            );
+        }
+        self.publisher.clone()
+    }
+
+    /// Resolve the publisher thread_id for `issue` — the number passed to
+    /// `Publisher::post`/`update`. For GitHub-sourced issues (and Discord
+    /// issues past `/confirm`) this is the GitHub issue number; for
+    /// pre-`/confirm` Discord threads it's the thread snowflake.
+    pub(crate) fn thread_id_for(&self, issue: &TrackedIssue) -> u64 {
+        if issue.is_discord_pending() {
+            issue.external_id_u64().unwrap_or(0)
+        } else {
+            issue.github_issue_number
+        }
+    }
+}
+
 pub(crate) struct AiLifecycleParams {
-    pub issue_number: u64,
     pub task_name: String,
     pub base_branch: String,
     pub claude_md: String,
@@ -69,13 +113,21 @@ pub(crate) struct AiLifecycleResult {
 /// Run the standard AI lifecycle: create worktree, run hooks, seed CLAUDE.md,
 /// invoke AI, run after_run hook. Returns the AI result and worktree path.
 /// The caller handles all post-AI logic (commit, verdict, DB updates, cleanup).
+///
+/// `issue` is taken by reference so progress can be routed to the right
+/// thread via `ctx.publisher_for(issue)`. The worktree's numeric scope
+/// (branch naming, work-dir path) also derives from the issue — GitHub
+/// issues use their issue number; Discord threads use their snowflake
+/// until `/confirm` assigns a GitHub issue number.
 pub(crate) async fn run_ai_lifecycle(
     ctx: &TransitionContext,
+    issue: &TrackedIssue,
     params: AiLifecycleParams,
 ) -> Result<AiLifecycleResult, HammurabiError> {
+    let thread_id = ctx.thread_id_for(issue);
     let worktree_path = ctx
         .worktree
-        .create_worktree(params.issue_number, &params.task_name, &params.base_branch)
+        .create_worktree(thread_id, &params.task_name, &params.base_branch)
         .await?;
 
     let worktree_str = worktree_path
@@ -130,10 +182,11 @@ pub(crate) async fn run_ai_lifecycle(
     // comment on the issue's thread (GitHub comment or Discord message).
     // ClaudeCliAgent ignores the sender, so the aggregator never posts
     // anything on that path.
+    let publisher = ctx.publisher_for(issue);
     let (events_tx, events_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let aggregator = tokio::spawn(progress::run_aggregator(
-        ctx.publisher.clone(),
-        params.issue_number,
+        publisher,
+        thread_id,
         events_rx,
         Duration::from_secs(10),
     ));
@@ -167,14 +220,15 @@ pub(crate) async fn run_ai_lifecycle(
     let result = ai_result?;
 
     tracing::info!(
-        issue = params.issue_number,
+        thread_id = thread_id,
+        issue = issue.github_issue_number,
         input_tokens = result.input_tokens,
         output_tokens = result.output_tokens,
         content_len = result.content.len(),
         "AI invocation complete"
     );
     tracing::debug!(
-        issue = params.issue_number,
+        thread_id = thread_id,
         content = %result.content,
         "AI output content"
     );

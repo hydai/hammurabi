@@ -83,6 +83,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
@@ -114,6 +115,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
@@ -141,6 +143,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),

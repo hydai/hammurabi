@@ -5,16 +5,17 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::access::AllowUsers;
 use crate::agents::acp::AcpAgent;
 use crate::agents::{AgentKind, AgentRegistry, AiAgent, ClaudeCliAgent};
-use crate::approval::{self, CommentApprovalResult, PrApprovalResult};
-use crate::config::{self, GitHubAuth};
+use crate::approval::{self, CommentApprovalResult, DiscordApprovalResult, PrApprovalResult};
+use crate::config::{self, DiscordChannelConfig, GitHubAuth};
 use crate::config::{Config, RepoConfig};
 use crate::db::Database;
 use crate::error::HammurabiError;
 use crate::github::{GitHubClient, OctocrabClient};
 use crate::lock::LockFile;
-use crate::models::{IssueState, TrackedIssue};
+use crate::models::{IssueState, SourceKind, TrackedIssue};
 use crate::transitions::{self, TransitionContext};
 use crate::worktree::{
     AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager,
@@ -45,6 +46,11 @@ fn build_agent_registry(config: &Config) -> AgentRegistry {
 /// Per-repo runtime context (GitHub client + worktree manager + publisher).
 struct RepoRuntime {
     github: Arc<dyn GitHubClient>,
+    /// Optional Discord client bound to this repo. `Some` when at least
+    /// one configured `[[sources]]` entry targets this repo; the poller
+    /// uses it both for intake polling and for the `DiscordPublisher`
+    /// handed to transitions via `TransitionContext::publisher_for`.
+    discord: Option<Arc<dyn crate::discord::DiscordClient>>,
     publisher: Arc<dyn crate::publisher::Publisher>,
     worktree: Arc<dyn WorktreeManager>,
     config: Arc<RepoConfig>,
@@ -119,6 +125,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     for runtime in cached_runtimes.values() {
         let ctx = TransitionContext {
             github: runtime.github.clone(),
+            discord: runtime.discord.clone(),
             publisher: runtime.publisher.clone(),
             agents: agents.clone(),
             worktree: runtime.worktree.clone(),
@@ -209,6 +216,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
             if let Some(runtime) = cached_runtimes.get(&repo_config.repo) {
                 let ctx = TransitionContext {
                     github: runtime.github.clone(),
+                    discord: runtime.discord.clone(),
                     publisher: runtime.publisher.clone(),
                     agents: agents.clone(),
                     worktree: runtime.worktree.clone(),
@@ -318,6 +326,7 @@ async fn init_repo_runtime(
 
     Ok(RepoRuntime {
         github: github_dyn,
+        discord: None,
         publisher,
         worktree: worktree_mgr,
         config: Arc::new(repo_config.clone()),
@@ -332,6 +341,11 @@ async fn reconcile_closed_issues(ctx: &TransitionContext) -> Result<(), Hammurab
     let all_tracked = ctx.db.get_all_issues_for_repo(repo)?;
     for issue in &all_tracked {
         if issue.state == IssueState::Done || issue.state == IssueState::Failed {
+            continue;
+        }
+        // Skip rows that haven't been assigned a GitHub issue yet (e.g.
+        // a Discord intake still in SpecDrafting/AwaitSpecApproval).
+        if issue.github_issue_number == 0 {
             continue;
         }
         match ctx.github.is_issue_open(issue.github_issue_number).await {
@@ -358,6 +372,94 @@ async fn reconcile_closed_issues(ctx: &TransitionContext) -> Result<(), Hammurab
     Ok(())
 }
 
+/// Process new @mentions in an allowlisted Discord channel. For each
+/// qualifying message we open a thread, insert a `TrackedIssue` with
+/// `source=Discord`, stash the pitch as `spec_content` so the drafting
+/// prompt can reference it, and immediately kick off the spec-drafting
+/// transition.
+///
+/// `since_id` is advanced across calls so already-processed messages
+/// aren't re-opened. The caller owns the cursor (see `DiscordIntake`).
+#[allow(dead_code)]
+pub(crate) async fn discord_intake_once(
+    ctx: &TransitionContext,
+    discord_cfg: &DiscordChannelConfig,
+    since_id: Option<u64>,
+) -> Result<Option<u64>, HammurabiError> {
+    let Some(discord) = ctx.discord.clone() else {
+        tracing::warn!(
+            channel = discord_cfg.channel_id,
+            "Skipping Discord intake: ctx.discord is None"
+        );
+        return Ok(since_id);
+    };
+    let allow: &AllowUsers = &discord_cfg.allow;
+    let messages = discord
+        .fetch_new_messages(discord_cfg.channel_id, since_id)
+        .await?;
+
+    let mut cursor = since_id;
+    for msg in messages {
+        cursor = Some(msg.id);
+        if !msg.mentions_bot {
+            continue;
+        }
+        if !allow.is_allowed(&msg.author_username) {
+            tracing::debug!(
+                channel = discord_cfg.channel_id,
+                user = %msg.author_username,
+                "Dropping message: sender not in allowlist"
+            );
+            continue;
+        }
+        let thread_name = truncate_thread_name(&msg.content);
+        let thread_id = discord
+            .start_thread(discord_cfg.channel_id, msg.id, &thread_name)
+            .await?;
+
+        ctx.db
+            .insert_discord_thread(&ctx.config.repo, thread_id, &thread_name)?;
+        let issue = ctx
+            .db
+            .get_discord_issue(&ctx.config.repo, thread_id)?
+            .ok_or_else(|| HammurabiError::Database("Discord row missing after insert".into()))?;
+        ctx.db.update_issue_spec_content(issue.id, &msg.content)?;
+
+        // Re-fetch to pick up the updated spec_content before drafting
+        let refreshed = ctx
+            .db
+            .get_issue_by_id(issue.id)?
+            .expect("issue present after insert");
+        if let Err(e) = transitions::spec_drafting::execute(ctx, &refreshed, None).await {
+            tracing::error!(
+                thread_id,
+                error = %e,
+                "spec_drafting failed for Discord intake"
+            );
+        }
+    }
+    Ok(cursor)
+}
+
+/// Truncate a pitch to a short, Discord-legal thread name.
+fn truncate_thread_name(content: &str) -> String {
+    let trimmed = content.trim();
+    // Drop leading `@…` mention tokens so the thread title starts on the
+    // actual idea.
+    let stripped = trimmed
+        .split_whitespace()
+        .skip_while(|w| w.starts_with('@') || w.starts_with("<@"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let base = if stripped.is_empty() {
+        trimmed.to_string()
+    } else {
+        stripped
+    };
+    // Discord thread names cap at 100 chars.
+    base.chars().take(90).collect::<String>()
+}
+
 async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
     let repo = &ctx.config.repo;
     tracing::debug!(repo = %repo, "Starting poll cycle");
@@ -374,6 +476,16 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
         .await?;
 
     for gh_issue in &labeled_issues {
+        // Skip if ANY source already tracks this issue number — e.g. a
+        // Discord `/confirm` flow already created the GitHub issue and
+        // the Discord row now carries its number.
+        if ctx
+            .db
+            .get_issue_by_github_number_any_source(repo, gh_issue.number)?
+            .is_some()
+        {
+            continue;
+        }
         if ctx.db.get_issue(repo, gh_issue.number)?.is_none() {
             // Verify the tracking label was applied by an authorized approver
             match ctx
@@ -579,7 +691,146 @@ async fn handle_spec_drafting(
     transitions::spec_drafting::execute(ctx, issue, None).await
 }
 
+/// Open a GitHub issue on behalf of a Discord-sourced row whose spec has
+/// been `/confirm`ed. The spec content (already persisted) becomes the
+/// issue body; a footer references the originating Discord thread for
+/// provenance. Updates the DB row with the new issue number.
+///
+/// No-op for GitHub-sourced rows (they already have a number).
+pub(crate) async fn ensure_github_issue(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<u64, HammurabiError> {
+    if issue.source == SourceKind::GitHub {
+        return Ok(issue.github_issue_number);
+    }
+    if issue.github_issue_number > 0 {
+        return Ok(issue.github_issue_number);
+    }
+    let spec = issue
+        .spec_content
+        .as_deref()
+        .unwrap_or("(spec unavailable)");
+    let footer = format!(
+        "\n\n---\n*Originated from Discord thread `{}` (source: {}).*",
+        issue.external_id, issue.source
+    );
+    let body = format!("{}{}", spec, footer);
+    let labels = vec![ctx.config.tracking_label.clone()];
+    let issue_number = ctx
+        .github
+        .create_issue(&issue.title, &body, &labels)
+        .await?;
+    ctx.db.set_issue_github_number(issue.id, issue_number)?;
+    tracing::info!(
+        discord_thread = %issue.external_id,
+        github_issue = issue_number,
+        "Opened GitHub issue for confirmed Discord spec"
+    );
+    Ok(issue_number)
+}
+
 async fn handle_await_spec_approval(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<(), HammurabiError> {
+    if issue.source == SourceKind::Discord {
+        return handle_await_spec_approval_discord(ctx, issue).await;
+    }
+    handle_await_spec_approval_github(ctx, issue).await
+}
+
+pub(crate) async fn handle_await_spec_approval_discord(
+    ctx: &TransitionContext,
+    issue: &TrackedIssue,
+) -> Result<(), HammurabiError> {
+    let thread_id = issue.external_id_u64().ok_or_else(|| {
+        HammurabiError::Config(format!(
+            "Discord row has non-numeric external_id: {}",
+            issue.external_id
+        ))
+    })?;
+    let Some(discord) = ctx.discord.clone() else {
+        tracing::warn!(
+            thread_id,
+            "Skipping Discord approval check: no DiscordClient in ctx"
+        );
+        return Ok(());
+    };
+
+    let outcome = approval::check_discord_approval(
+        &*discord,
+        thread_id,
+        issue.last_comment_id,
+        &ctx.config.approvers,
+        "/",
+    )
+    .await?;
+
+    match outcome {
+        DiscordApprovalResult::Confirmed { message_id } => {
+            ctx.db.update_issue_last_comment(issue.id, message_id)?;
+            let gh_number = ensure_github_issue(ctx, issue).await?;
+            ctx.db.update_issue_state(
+                issue.id,
+                IssueState::Implementing,
+                Some(IssueState::AwaitSpecApproval),
+            )?;
+            // After ensure_github_issue the Discord row has a real issue
+            // number, so publisher_for now falls through to the GitHub
+            // publisher. But the confirm-announcement belongs in the
+            // thread, so post via DiscordPublisher explicitly.
+            let _ = discord
+                .post_message(
+                    thread_id,
+                    &format!(
+                        "Spec approved. GitHub issue #{} opened. Starting implementation...",
+                        gh_number
+                    ),
+                )
+                .await;
+            let updated = ctx.db.get_issue_by_id(issue.id)?.ok_or_else(|| {
+                HammurabiError::Database("issue disappeared after /confirm".into())
+            })?;
+            transitions::implementing::execute(ctx, &updated, None).await?;
+        }
+        DiscordApprovalResult::Revised {
+            feedback,
+            message_id,
+        } => {
+            ctx.db.update_issue_last_comment(issue.id, message_id)?;
+            ctx.db.update_issue_state(
+                issue.id,
+                IssueState::SpecDrafting,
+                Some(IssueState::AwaitSpecApproval),
+            )?;
+            let _ = discord
+                .post_message(thread_id, "Feedback received. Revising spec...")
+                .await;
+            let updated = ctx.db.get_issue_by_id(issue.id)?.ok_or_else(|| {
+                HammurabiError::Database("issue disappeared after /revise".into())
+            })?;
+            transitions::spec_drafting::execute(ctx, &updated, Some(&feedback)).await?;
+        }
+        DiscordApprovalResult::Cancelled { message_id } => {
+            ctx.db.update_issue_last_comment(issue.id, message_id)?;
+            ctx.db.update_issue_state(
+                issue.id,
+                IssueState::Failed,
+                Some(IssueState::AwaitSpecApproval),
+            )?;
+            ctx.db
+                .update_issue_error(issue.id, "Discord intake cancelled by approver")?;
+            let _ = discord.post_message(thread_id, "Intake cancelled.").await;
+        }
+        DiscordApprovalResult::Pending => {
+            check_stale(ctx, issue).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_await_spec_approval_github(
     ctx: &TransitionContext,
     issue: &TrackedIssue,
 ) -> Result<(), HammurabiError> {
@@ -868,6 +1119,7 @@ mod tests {
     fn build_ctx(gh: Arc<MockGitHubClient>, db: Arc<Database>) -> TransitionContext {
         TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(

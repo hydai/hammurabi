@@ -51,8 +51,8 @@ pub async fn execute(
 
     let lifecycle = super::run_ai_lifecycle(
         ctx,
+        issue,
         AiLifecycleParams {
-            issue_number: issue.github_issue_number,
             task_name: "impl".to_string(),
             base_branch,
             claude_md: claude_md.clone(),
@@ -249,6 +249,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt.clone(),
@@ -301,6 +302,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt.clone(),
@@ -352,6 +354,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt.clone(),
@@ -427,6 +430,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt.clone(),

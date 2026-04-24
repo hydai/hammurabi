@@ -130,6 +130,9 @@ pub struct TrackedIssue {
     /// number stringified; for Discord it is the thread ID.
     pub external_id: String,
     pub repo: String,
+    /// GitHub issue number, or `0` for Discord-sourced rows that haven't
+    /// reached `/confirm` yet. Populated once the spec is approved and
+    /// `ensure_github_issue` opens the issue.
     pub github_issue_number: u64,
     pub title: String,
     pub state: IssueState,
@@ -147,6 +150,23 @@ pub struct TrackedIssue {
     pub bypass: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[allow(dead_code)]
+impl TrackedIssue {
+    /// True if this is a Discord-sourced intake that hasn't yet been
+    /// `/confirm`ed into a GitHub issue.
+    pub fn is_discord_pending(&self) -> bool {
+        self.source == SourceKind::Discord && self.github_issue_number == 0
+    }
+
+    /// Parse `external_id` as a u64. For Discord rows this is the thread
+    /// snowflake; for GitHub rows it's the issue number in textual form.
+    /// Returns `None` if the id isn't numeric (shouldn't happen for our
+    /// supported sources but guards against DB corruption).
+    pub fn external_id_u64(&self) -> Option<u64> {
+        self.external_id.parse().ok()
+    }
 }
 
 #[derive(Debug, Clone)]

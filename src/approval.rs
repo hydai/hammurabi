@@ -1,3 +1,4 @@
+use crate::discord::DiscordClient;
 use crate::error::HammurabiError;
 use crate::github::{GitHubClient, PrStatus};
 
@@ -6,6 +7,22 @@ use crate::github::{GitHubClient, PrStatus};
 pub enum CommentApprovalResult {
     Approved { comment_id: u64 },
     Feedback { body: String, comment_id: u64 },
+    Pending,
+}
+
+/// Outcome of scanning a Discord thread for `/confirm` / `/revise` /
+/// `/cancel` commands. Mirrors `CommentApprovalResult` but with Discord
+/// message ids and an explicit cancellation variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum DiscordApprovalResult {
+    /// User typed `/confirm`. `message_id` is the confirming message's snowflake.
+    Confirmed { message_id: u64 },
+    /// User typed `/revise <text>`. `feedback` is the text after the command.
+    Revised { feedback: String, message_id: u64 },
+    /// User typed `/cancel`.
+    Cancelled { message_id: u64 },
+    /// No actionable command found since `since_id`.
     Pending,
 }
 
@@ -71,6 +88,59 @@ pub async fn check_pr_approval(
         PrStatus::ClosedWithoutMerge => Ok(PrApprovalResult::ClosedWithoutMerge),
         PrStatus::Open => Ok(PrApprovalResult::Pending),
     }
+}
+
+/// Scan a Discord thread for `/confirm`, `/revise <text>`, or `/cancel`
+/// commands from an authorized approver. The latest command wins —
+/// a `/revise` after `/confirm` re-opens the draft loop.
+///
+/// `command_prefix` is usually `"/"` (matches `/confirm`, `/revise`);
+/// the prefix is stripped before the command name is parsed.
+#[allow(dead_code)]
+pub async fn check_discord_approval(
+    client: &dyn DiscordClient,
+    thread_id: u64,
+    since_id: Option<u64>,
+    approvers: &[String],
+    command_prefix: &str,
+) -> Result<DiscordApprovalResult, HammurabiError> {
+    let msgs = client.fetch_thread_messages(thread_id, since_id).await?;
+
+    let mut latest: Option<DiscordApprovalResult> = None;
+
+    for msg in &msgs {
+        if !approvers.iter().any(|a| a == &msg.author_username) {
+            continue;
+        }
+        let trimmed = msg.content.trim();
+        let Some(command) = trimmed.strip_prefix(command_prefix) else {
+            continue;
+        };
+        // Split command and tail arg (`revise` + "<text>").
+        let mut parts = command.splitn(2, char::is_whitespace);
+        let (name, tail) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+        match name {
+            "confirm" => {
+                latest = Some(DiscordApprovalResult::Confirmed { message_id: msg.id });
+            }
+            "revise" => {
+                let feedback = tail.trim().to_string();
+                if feedback.is_empty() {
+                    continue;
+                }
+                latest = Some(DiscordApprovalResult::Revised {
+                    feedback,
+                    message_id: msg.id,
+                });
+            }
+            "cancel" => {
+                latest = Some(DiscordApprovalResult::Cancelled { message_id: msg.id });
+            }
+            _ => {}
+        }
+    }
+
+    Ok(latest.unwrap_or(DiscordApprovalResult::Pending))
 }
 
 /// Check for a `/retry` comment from an authorized approver.
@@ -345,5 +415,104 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, None);
+    }
+
+    // --- Discord approval tests ---
+
+    use crate::discord::mock::MockDiscordClient;
+    use crate::discord::DiscordMessage;
+
+    fn seed_thread_msg(c: &MockDiscordClient, thread: u64, user: &str, body: &str) -> u64 {
+        c.add_thread_message(
+            thread,
+            DiscordMessage {
+                id: 0,
+                channel_id: thread,
+                thread_id: Some(thread),
+                author_id: 0,
+                author_username: user.into(),
+                content: body.into(),
+                mentions_bot: false,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn discord_confirm_wins_over_earlier_revise() {
+        let c = MockDiscordClient::new();
+        seed_thread_msg(&c, 100, "hydai", "/revise make it bigger");
+        seed_thread_msg(&c, 100, "hydai", "/confirm");
+
+        let result = check_discord_approval(&c, 100, None, &["hydai".to_string()], "/")
+            .await
+            .unwrap();
+        assert!(matches!(result, DiscordApprovalResult::Confirmed { .. }));
+    }
+
+    #[tokio::test]
+    async fn discord_revise_captures_feedback() {
+        let c = MockDiscordClient::new();
+        seed_thread_msg(
+            &c,
+            100,
+            "hydai",
+            "/revise also respect prefers-color-scheme",
+        );
+
+        let result = check_discord_approval(&c, 100, None, &["hydai".to_string()], "/")
+            .await
+            .unwrap();
+        match result {
+            DiscordApprovalResult::Revised { feedback, .. } => {
+                assert_eq!(feedback, "also respect prefers-color-scheme");
+            }
+            _ => panic!("expected Revised"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discord_non_approver_is_ignored() {
+        let c = MockDiscordClient::new();
+        seed_thread_msg(&c, 100, "eve", "/confirm");
+
+        let result = check_discord_approval(&c, 100, None, &["hydai".to_string()], "/")
+            .await
+            .unwrap();
+        assert_eq!(result, DiscordApprovalResult::Pending);
+    }
+
+    #[tokio::test]
+    async fn discord_revise_without_feedback_is_ignored() {
+        let c = MockDiscordClient::new();
+        seed_thread_msg(&c, 100, "hydai", "/revise");
+
+        let result = check_discord_approval(&c, 100, None, &["hydai".to_string()], "/")
+            .await
+            .unwrap();
+        assert_eq!(result, DiscordApprovalResult::Pending);
+    }
+
+    #[tokio::test]
+    async fn discord_cancel_is_distinct_outcome() {
+        let c = MockDiscordClient::new();
+        seed_thread_msg(&c, 100, "hydai", "/cancel");
+
+        let result = check_discord_approval(&c, 100, None, &["hydai".to_string()], "/")
+            .await
+            .unwrap();
+        assert!(matches!(result, DiscordApprovalResult::Cancelled { .. }));
+    }
+
+    #[tokio::test]
+    async fn discord_since_id_filters_older_commands() {
+        let c = MockDiscordClient::new();
+        let id_old = seed_thread_msg(&c, 100, "hydai", "/confirm");
+        let _id_new = seed_thread_msg(&c, 100, "hydai", "hello world");
+
+        // Scan after the /confirm message — should see only "hello world"
+        let result = check_discord_approval(&c, 100, Some(id_old), &["hydai".to_string()], "/")
+            .await
+            .unwrap();
+        assert_eq!(result, DiscordApprovalResult::Pending);
     }
 }

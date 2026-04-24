@@ -117,8 +117,8 @@ pub async fn execute(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<()
 
     let lifecycle_result = super::run_ai_lifecycle(
         ctx,
+        issue,
         AiLifecycleParams {
-            issue_number: issue.github_issue_number,
             task_name: "review".to_string(),
             base_branch: impl_branch.clone(),
             claude_md,
@@ -390,6 +390,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt,
@@ -441,6 +442,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt,
@@ -496,6 +498,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt,
@@ -543,6 +546,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt,
@@ -614,6 +618,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            discord: None,
             publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai.clone()),
             worktree: wt.clone(),

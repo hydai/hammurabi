@@ -117,6 +117,7 @@ async fn test_full_lifecycle() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
+        discord: None,
         publisher: std::sync::Arc::new(publisher::GithubPublisher::new(gh.clone())),
         agents: Arc::new(AgentRegistry::for_test(ai)),
         worktree: wt,
@@ -252,6 +253,7 @@ async fn test_bypass_spec_auto_approval() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
+        discord: None,
         publisher: std::sync::Arc::new(publisher::GithubPublisher::new(gh.clone())),
         agents: Arc::new(AgentRegistry::for_test(ai)),
         worktree: wt,
