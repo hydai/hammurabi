@@ -209,7 +209,7 @@ mod tests {
     use crate::worktree::mock::MockWorktreeManager;
     use std::sync::Arc;
 
-    use crate::transitions::test_helpers::test_config;
+    use crate::transitions::test_helpers::{test_config, test_registry_with};
 
     #[tokio::test]
     async fn test_implementing_transitions_to_reviewing() {
@@ -247,7 +247,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai,
+            agents: test_registry_with(ai),
             worktree: wt.clone(),
             db: db.clone(),
             config: Arc::new(test_config()),
@@ -298,7 +298,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai,
+            agents: test_registry_with(ai),
             worktree: wt.clone(),
             db: db.clone(),
             config: Arc::new(test_config()),
@@ -348,7 +348,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai,
+            agents: test_registry_with(ai),
             worktree: wt.clone(),
             db: db.clone(),
             config: Arc::new(test_config()),
@@ -422,7 +422,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai,
+            agents: test_registry_with(ai),
             worktree: wt.clone(),
             db: db.clone(),
             config: Arc::new(test_config()),

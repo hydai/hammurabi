@@ -65,7 +65,7 @@ mod tests {
     use crate::worktree::mock::MockWorktreeManager;
     use std::sync::Arc;
 
-    use crate::transitions::test_helpers::test_config;
+    use crate::transitions::test_helpers::{test_config, test_registry_with};
 
     #[tokio::test]
     async fn test_pr_merged_completes_issue() {
@@ -83,7 +83,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai: Arc::new(MockAiAgent::new()),
+            agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
             db: db.clone(),
             config: Arc::new(test_config()),
@@ -113,7 +113,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh,
-            ai: Arc::new(MockAiAgent::new()),
+            agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
             db: db.clone(),
             config: Arc::new(test_config()),
@@ -139,7 +139,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh,
-            ai: Arc::new(MockAiAgent::new()),
+            agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
             db: db.clone(),
             config: Arc::new(test_config()),

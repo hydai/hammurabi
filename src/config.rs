@@ -150,6 +150,12 @@ impl RepoConfig {
             .unwrap_or(self.ai_stall_timeout_secs)
     }
 
+    /// Resolve the agent kind for a task. Phase 2 returns `ClaudeCli` for
+    /// every task; Phase 5 will consult per-task and per-repo overrides.
+    pub fn agent_kind_for_task(&self, _task: &str) -> crate::agents::AgentKind {
+        crate::agents::AgentKind::ClaudeCli
+    }
+
     /// Create a RepoConfig for a CLI-provided repo, using an existing config as
     /// defaults (if available) or sensible defaults otherwise.
     pub fn from_cli_override(

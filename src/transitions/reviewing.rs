@@ -344,7 +344,7 @@ mod tests {
     use crate::worktree::mock::MockWorktreeManager;
     use std::sync::Arc;
 
-    use crate::transitions::test_helpers::test_config;
+    use crate::transitions::test_helpers::{test_config, test_registry_with};
 
     fn setup_issue(gh: &MockGitHubClient, db: &Database) -> TrackedIssue {
         gh.add_issue(GitHubIssue {
@@ -390,7 +390,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai,
+            agents: test_registry_with(ai),
             worktree: wt,
             db: db.clone(),
             config: Arc::new(test_config()),
@@ -440,7 +440,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai,
+            agents: test_registry_with(ai),
             worktree: wt,
             db: db.clone(),
             config: Arc::new(test_config()),
@@ -494,7 +494,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai,
+            agents: test_registry_with(ai),
             worktree: wt,
             db: db.clone(),
             config: Arc::new(config),
@@ -540,7 +540,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai,
+            agents: test_registry_with(ai),
             worktree: wt,
             db: db.clone(),
             config: Arc::new(test_config()),
@@ -610,7 +610,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
-            ai: ai.clone(),
+            agents: test_registry_with(ai.clone()),
             worktree: wt.clone(),
             db: db.clone(),
             config: Arc::new(test_config()),

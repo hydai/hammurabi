@@ -28,6 +28,7 @@ mod transitions;
 mod worktree;
 
 use agents::mock::MockAiAgent;
+use agents::registry::AgentRegistry;
 use agents::{AgentKind, AiResult};
 use config::RepoConfig;
 use db::Database;
@@ -85,7 +86,7 @@ async fn test_retry_after_spec_failure() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
-        ai: ai.clone(),
+        agents: Arc::new(AgentRegistry::for_test(ai.clone())),
         worktree: wt,
         db: db.clone(),
         config: Arc::new(test_config()),
@@ -171,7 +172,7 @@ async fn test_implementation_failure_and_retry() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
-        ai: ai.clone(),
+        agents: Arc::new(AgentRegistry::for_test(ai.clone())),
         worktree: wt,
         db: db.clone(),
         config: Arc::new(test_config()),

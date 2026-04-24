@@ -5,6 +5,7 @@
 //! additions (ACP etc.) plug in as further implementations of `AiAgent`.
 
 pub mod claude_cli;
+pub mod registry;
 
 #[cfg(test)]
 pub mod mock;
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::HammurabiError;
 
 pub use claude_cli::ClaudeCliAgent;
+pub use registry::AgentRegistry;
 
 /// Which agent implementation should service an invocation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

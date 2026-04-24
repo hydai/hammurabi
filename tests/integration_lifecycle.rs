@@ -30,6 +30,7 @@ mod transitions;
 mod worktree;
 
 use agents::mock::MockAiAgent;
+use agents::registry::AgentRegistry;
 use agents::{AgentKind, AiResult};
 use config::RepoConfig;
 use db::Database;
@@ -107,7 +108,7 @@ async fn test_full_lifecycle() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
-        ai,
+        agents: Arc::new(AgentRegistry::for_test(ai)),
         worktree: wt,
         db: db.clone(),
         config,
@@ -241,7 +242,7 @@ async fn test_bypass_spec_auto_approval() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
-        ai,
+        agents: Arc::new(AgentRegistry::for_test(ai)),
         worktree: wt,
         db: db.clone(),
         config,

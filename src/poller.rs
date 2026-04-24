@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::agents::ClaudeCliAgent;
+use crate::agents::{AgentKind, AgentRegistry, AiAgent, ClaudeCliAgent};
 use crate::approval::{self, CommentApprovalResult, PrApprovalResult};
 use crate::config::{self, GitHubAuth};
 use crate::config::{Config, RepoConfig};
@@ -18,6 +18,15 @@ use crate::transitions::{self, TransitionContext};
 use crate::worktree::{
     AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager,
 };
+
+/// Build the global agent registry. Phase 2 registers only the Claude CLI
+/// under `AgentKind::ClaudeCli`; Phase 4 will add ACP kinds.
+fn build_agent_registry() -> AgentRegistry {
+    let mut map: std::collections::HashMap<AgentKind, Arc<dyn AiAgent>> =
+        std::collections::HashMap::new();
+    map.insert(AgentKind::ClaudeCli, Arc::new(ClaudeCliAgent::new()));
+    AgentRegistry::new(map)
+}
 
 /// Per-repo runtime context (GitHub client + worktree manager).
 struct RepoRuntime {
@@ -46,8 +55,9 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     // Build token provider (shared across all repos)
     let token_provider = build_token_provider(&config.github_auth)?;
 
-    // Initialize AI agent (shared, stateless)
-    let ai: Arc<dyn crate::agents::AiAgent> = Arc::new(ClaudeCliAgent::new());
+    // Initialize agent registry (shared, stateless).
+    // Phase 2 only registers the Claude CLI; Phase 4 adds ACP kinds.
+    let agents = Arc::new(build_agent_registry());
 
     // Initialize per-repo runtimes
     let repos_dir = base_dir.join("repos");
@@ -94,7 +104,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     for runtime in cached_runtimes.values() {
         let ctx = TransitionContext {
             github: runtime.github.clone(),
-            ai: ai.clone(),
+            agents: agents.clone(),
             worktree: runtime.worktree.clone(),
             db: db.clone(),
             config: runtime.config.clone(),
@@ -183,7 +193,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
             if let Some(runtime) = cached_runtimes.get(&repo_config.repo) {
                 let ctx = TransitionContext {
                     github: runtime.github.clone(),
-                    ai: ai.clone(),
+                    agents: agents.clone(),
                     worktree: runtime.worktree.clone(),
                     db: db.clone(),
                     config: Arc::new(repo_config.clone()),
@@ -829,14 +839,14 @@ mod tests {
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::GitHubIssue;
-    use crate::transitions::test_helpers::test_config;
+    use crate::transitions::test_helpers::{test_config, test_registry_with};
     use crate::transitions::TransitionContext;
     use crate::worktree::mock::MockWorktreeManager;
 
     fn build_ctx(gh: Arc<MockGitHubClient>, db: Arc<Database>) -> TransitionContext {
         TransitionContext {
             github: gh,
-            ai: Arc::new(MockAiAgent::new()),
+            agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(
                 std::env::temp_dir().join("hammurabi-test-poller"),
             )),

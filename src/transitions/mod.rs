@@ -6,7 +6,7 @@ pub mod spec_drafting;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agents::{AgentKind, AiAgent, AiInvocation, AiResult};
+use crate::agents::{AgentRegistry, AiInvocation, AiResult};
 use crate::config::RepoConfig;
 use crate::db::Database;
 use crate::error::HammurabiError;
@@ -17,7 +17,7 @@ use crate::worktree::WorktreeManager;
 #[derive(Clone)]
 pub struct TransitionContext {
     pub github: Arc<dyn GitHubClient>,
-    pub ai: Arc<dyn AiAgent>,
+    pub agents: Arc<AgentRegistry>,
     pub worktree: Arc<dyn WorktreeManager>,
     pub db: Arc<Database>,
     pub config: Arc<RepoConfig>,
@@ -96,10 +96,11 @@ pub(crate) async fn run_ai_lifecycle(
     )
     .await?;
 
-    let ai_result = ctx
-        .ai
+    let agent_kind = ctx.config.agent_kind_for_task(&params.ai_task);
+    let agent = ctx.agents.get(agent_kind)?;
+    let ai_result = agent
         .invoke(AiInvocation {
-            agent_kind: AgentKind::ClaudeCli,
+            agent_kind,
             model: model.clone(),
             max_turns,
             effort,
@@ -142,7 +143,27 @@ pub(crate) async fn run_ai_lifecycle(
 
 #[cfg(test)]
 pub(crate) mod test_helpers {
+    use std::sync::Arc;
+
+    use crate::agents::mock::MockAiAgent;
+    use crate::agents::{AgentRegistry, AiAgent};
     use crate::config::RepoConfig;
+
+    /// Build a registry wrapping a single mock agent. Used by transition tests
+    /// that want fine-grained control over mock behavior.
+    pub fn test_registry_with<A>(ai: Arc<A>) -> Arc<AgentRegistry>
+    where
+        A: AiAgent + 'static,
+    {
+        Arc::new(AgentRegistry::for_test(ai))
+    }
+
+    /// Build a registry with an empty mock. Convenient when a test doesn't
+    /// expect the AI to be invoked.
+    #[allow(dead_code)]
+    pub fn test_registry() -> Arc<AgentRegistry> {
+        test_registry_with(Arc::new(MockAiAgent::new()))
+    }
 
     pub fn test_config() -> RepoConfig {
         RepoConfig {
