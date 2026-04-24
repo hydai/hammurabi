@@ -1,7 +1,15 @@
-// The pure state machine defines the valid (State, Event) → SideEffect
-// transitions. The runtime currently dispatches directly to transition
-// modules, so these types are exercised only through tests. They remain
-// as the authoritative specification of allowed transitions.
+//! Authoritative specification of the issue lifecycle: a pure function
+//! `(State, Event) -> Vec<SideEffect>` with no I/O.
+//!
+//! The daemon at runtime dispatches directly to the per-edge modules
+//! under `src/transitions/` rather than calling through this function;
+//! the two are kept in lockstep by the exhaustive test suite below. Any
+//! legal transition must have a matching test case here, and any new
+//! state or event must be added to both representations in the same
+//! commit. Adding a state-machine test that fails is the canonical way
+//! to flag a missing transition implementation.
+//!
+//! See `docs/architecture.md` for the full state graph.
 #![allow(dead_code)]
 
 use crate::error::HammurabiError;

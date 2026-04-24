@@ -1,8 +1,18 @@
 //! Agent abstraction layer.
 //!
-//! Defines the `AiAgent` trait and supporting types. Concrete implementations
-//! live in sibling modules. Today: `claude_cli` (the Claude CLI). Future
-//! additions (ACP etc.) plug in as further implementations of `AiAgent`.
+//! Defines the `AiAgent` trait and the `AgentKind` enum (kebab-case at
+//! the serde boundary — `claude-cli`, `acp-claude`, `acp-gemini`,
+//! `acp-codex`). Concrete implementations live in sibling modules:
+//!
+//! - `claude_cli::ClaudeCliAgent` drives `claude --print --output-format
+//!   stream-json` directly.
+//! - `acp::AcpAgent` drives any ACP-compatible agent (`claude-agent-acp`,
+//!   `gemini --acp`, `codex-acp`) via JSON-RPC over stdio using the
+//!   minimal client in `src/acp/`.
+//!
+//! `AgentRegistry` (built at startup by `poller::build_agent_registry`)
+//! maps each `AgentKind` to its concrete `Arc<dyn AiAgent>` and is
+//! shared across all transitions.
 
 pub mod acp;
 pub mod claude_cli;
