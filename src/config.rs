@@ -23,6 +23,9 @@ pub enum GitHubAuth {
 struct RawGitHubAppConfig {
     app_id: Option<u64>,
     private_key_path: Option<String>,
+    /// Alias for `private_key_path`. Present for symmetry with the other
+    /// `*_file` fields — operators can use whichever name reads clearer.
+    private_key_file: Option<String>,
     installation_id: Option<u64>,
 }
 
@@ -111,8 +114,12 @@ struct RawDiscordChannel {
     /// Points at a configured `[[repos]]` entry (`owner/name`).
     repo: String,
     /// Env-expanded bot token. `${VAR}` is substituted from the
-    /// environment at load time.
+    /// environment at load time. Mutually exclusive with `bot_token_file`.
+    #[serde(default)]
     bot_token: String,
+    /// Path to a file containing the Discord bot token. Mutually exclusive
+    /// with `bot_token`. Intended for K8s Secret volume mounts.
+    bot_token_file: Option<String>,
     /// Users allowed to `/confirm` the spec once it's drafted. Defaults
     /// to the target repo's approvers if empty.
     #[serde(default)]
@@ -128,7 +135,7 @@ struct RawDiscordChannel {
     access: RawAccess,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 struct RawConfig {
     // Legacy single-repo field (backward compat)
     repo: Option<String>,
@@ -151,6 +158,10 @@ struct RawConfig {
     max_concurrent_agents: Option<u32>,
     approvers: Option<Vec<String>>,
     github_token: Option<String>,
+    /// Path to a file containing the GitHub token. Mutually exclusive with
+    /// `github_token`. Handy for K8s projected-Secret mounts, e.g.
+    /// `github_token_file = "/var/run/secrets/hammurabi/github_token"`.
+    github_token_file: Option<String>,
     github_app: Option<RawGitHubAppConfig>,
     bypass_label: Option<String>,
     hooks: Option<HooksConfig>,
@@ -520,33 +531,34 @@ fn read_raw_from_path(explicit_path: Option<&Path>) -> Result<RawConfig, Hammura
 }
 
 fn empty_raw_config() -> RawConfig {
-    RawConfig {
-        repo: None,
-        repos: None,
-        sources: None,
-        poll_interval: None,
-        tracking_label: None,
-        stale_timeout_days: None,
-        api_retry_count: None,
-        ai_model: None,
-        ai_max_turns: None,
-        ai_effort: None,
-        ai_timeout_secs: None,
-        ai_stall_timeout_secs: None,
-        ai_max_retries: None,
-        max_concurrent_agents: None,
-        approvers: None,
-        github_token: None,
-        github_app: None,
-        bypass_label: None,
-        hooks: None,
-        review: None,
-        review_max_iterations: None,
-        spec: None,
-        implement: None,
-        agent_kind: None,
-        agents: None,
+    RawConfig::default()
+}
+
+/// Read a secret from a file on disk for the `*_file` config fields.
+/// Trims trailing whitespace so a file ending in a newline doesn't corrupt
+/// the token. When `HAMMURABI_SECRETS_STRICT=1` is set, paths containing
+/// `..` components are rejected to keep operators from accidentally
+/// pointing the daemon at arbitrary host files; strict mode is off by
+/// default so local-dev paths like `/tmp/token` still work.
+fn read_secret_file(raw_path: &str) -> Result<String, HammurabiError> {
+    if std::env::var("HAMMURABI_SECRETS_STRICT").ok().as_deref() == Some("1") {
+        let path = std::path::Path::new(raw_path);
+        if path.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        }) {
+            return Err(HammurabiError::Config(format!(
+                "HAMMURABI_SECRETS_STRICT=1: secret file path must not contain `.` or `..` components (got {})",
+                raw_path
+            )));
+        }
     }
+    let contents = std::fs::read_to_string(raw_path).map_err(|e| {
+        HammurabiError::Config(format!("failed to read secret file {}: {}", raw_path, e))
+    })?;
+    Ok(contents.trim_end().to_string())
 }
 
 /// Download the body at `url` with tight timeouts and a 1 MiB cap. HTTPS-only
@@ -660,7 +672,25 @@ fn build_config(mut raw: RawConfig) -> Result<Config, HammurabiError> {
         .or_else(|| env_override_option_string("bypass_label"));
 
     // --- GitHub authentication ---
-    let mut github_token = raw.github_token.unwrap_or_default();
+    // `github_token_file` takes precedence when set; mutual exclusion with
+    // `github_token` is validated up front so a mis-configured deployment
+    // fails loudly.
+    if raw.github_token_file.is_some()
+        && raw
+            .github_token
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    {
+        return Err(HammurabiError::Config(
+            "set either github_token or github_token_file, not both".into(),
+        ));
+    }
+    let mut github_token = if let Some(path) = raw.github_token_file.as_deref() {
+        read_secret_file(path)?
+    } else {
+        raw.github_token.unwrap_or_default()
+    };
     if github_token.is_empty() {
         github_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
     }
@@ -671,10 +701,23 @@ fn build_config(mut raw: RawConfig) -> Result<Config, HammurabiError> {
         .as_ref()
         .and_then(|a| a.app_id)
         .or_else(|| env_override_option_string("github_app_id").and_then(|v| v.parse().ok()));
+    // `private_key_file` is an alias for `private_key_path`; setting both is
+    // an error.
+    if let Some(app) = raw.github_app.as_ref() {
+        if app.private_key_path.is_some() && app.private_key_file.is_some() {
+            return Err(HammurabiError::Config(
+                "set either private_key_path or private_key_file, not both".into(),
+            ));
+        }
+    }
     let app_key_path = raw
         .github_app
         .as_ref()
-        .and_then(|a| a.private_key_path.clone())
+        .and_then(|a| {
+            a.private_key_path
+                .clone()
+                .or_else(|| a.private_key_file.clone())
+        })
         .or_else(|| env_override_option_string("github_app_private_key_path"));
     let app_installation_id = raw
         .github_app
@@ -904,9 +947,20 @@ fn resolve_sources(
                             .into(),
                     ));
                 }
-                // bot_token is already expanded by `expand_raw_config`; just
-                // enforce non-emptiness here so a missing `${TOKEN}` fails loudly.
-                let bot_token = d.bot_token.clone();
+                // bot_token string is already `${VAR}`-expanded by
+                // `expand_raw_config`; bot_token_file is read here because
+                // we haven't touched the filesystem yet.
+                if d.bot_token_file.is_some() && !d.bot_token.is_empty() {
+                    return Err(HammurabiError::Config(format!(
+                        "Discord channel {}: set either bot_token or bot_token_file, not both",
+                        channel_id
+                    )));
+                }
+                let bot_token = if let Some(path) = d.bot_token_file.as_deref() {
+                    read_secret_file(path)?
+                } else {
+                    d.bot_token.clone()
+                };
                 if bot_token.trim().is_empty() {
                     return Err(HammurabiError::Config(format!(
                         "Discord source for channel {} is missing bot_token",
@@ -1068,6 +1122,74 @@ mod tests {
             ConfigSource::Path(Some(p)) => assert_eq!(p, PathBuf::from("hammurabi.toml")),
             _ => panic!("expected Path variant"),
         }
+    }
+
+    #[test]
+    fn read_secret_file_strips_trailing_newline() {
+        let tmp = std::env::temp_dir().join(format!("hammurabi-secret-{}.txt", std::process::id()));
+        std::fs::write(&tmp, "supersecret\n").unwrap();
+        let got = read_secret_file(tmp.to_str().unwrap()).unwrap();
+        assert_eq!(got, "supersecret");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn github_token_file_and_github_token_mutual_exclusion() {
+        let mut raw = RawConfig::default();
+        raw.repo = Some("owner/repo".into());
+        raw.ai_model = Some("claude".into());
+        raw.approvers = Some(vec!["alice".into()]);
+        raw.github_token = Some("inline".into());
+        raw.github_token_file = Some("/tmp/irrelevant".into());
+        let err = build_config(raw).unwrap_err();
+        assert!(
+            format!("{}", err).contains("not both"),
+            "expected mutual-exclusion error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn github_token_file_reads_value() {
+        let tmp = std::env::temp_dir().join(format!("hammurabi-ght-{}.txt", std::process::id()));
+        std::fs::write(&tmp, "ghp_from_file\n").unwrap();
+        let mut raw = RawConfig::default();
+        raw.repo = Some("owner/repo".into());
+        raw.ai_model = Some("claude".into());
+        raw.approvers = Some(vec!["alice".into()]);
+        raw.github_token_file = Some(tmp.to_str().unwrap().into());
+        let config = build_config(raw).unwrap();
+        match config.github_auth {
+            GitHubAuth::Token(t) => assert_eq!(t, "ghp_from_file"),
+            _ => panic!("expected token auth"),
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn read_secret_file_strict_mode_behavior() {
+        // These two scenarios share the HAMMURABI_SECRETS_STRICT env var,
+        // so they must run sequentially in the same test function (tests in
+        // the same binary otherwise run in parallel threads).
+        //
+        // Strict: path with `..` is rejected before we even try the fs.
+        std::env::set_var("HAMMURABI_SECRETS_STRICT", "1");
+        let err = read_secret_file("/var/run/secrets/hammurabi/../../etc/shadow").unwrap_err();
+        assert!(
+            format!("{}", err).contains("must not contain"),
+            "strict-mode error should mention traversal"
+        );
+
+        // Permissive (default): traversal is allowed; only the missing file
+        // surfaces as an error.
+        std::env::remove_var("HAMMURABI_SECRETS_STRICT");
+        let err = read_secret_file("/nonexistent/../../path").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("failed to read"),
+            "permissive error should be fs-level, got: {}",
+            msg
+        );
     }
 
     #[tokio::test]
