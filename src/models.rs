@@ -1,6 +1,42 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// Origin of a tracked issue. Persisted as a lowercase string in the DB
+/// `source` column so the unique identity `(source, repo, external_id)`
+/// remains readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceKind {
+    GitHub,
+    Discord,
+}
+
+impl SourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SourceKind::GitHub => "github",
+            SourceKind::Discord => "discord",
+        }
+    }
+}
+
+impl fmt::Display for SourceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SourceKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "github" => Ok(SourceKind::GitHub),
+            "discord" => Ok(SourceKind::Discord),
+            _ => Err(format!("unknown source: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssueState {
     Discovered,
@@ -87,6 +123,12 @@ issue_state_strings! {
 #[allow(dead_code)]
 pub struct TrackedIssue {
     pub id: i64,
+    /// Origin of this issue (GitHub label poll, Discord thread, etc.).
+    /// Canonical identity is `(source, repo, external_id)`.
+    pub source: SourceKind,
+    /// Source-native identifier as text. For GitHub this is the issue
+    /// number stringified; for Discord it is the thread ID.
+    pub external_id: String,
     pub repo: String,
     pub github_issue_number: u64,
     pub title: String,
@@ -173,5 +215,20 @@ mod tests {
     #[test]
     fn test_invalid_state_parse() {
         assert!(IssueState::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_source_kind_roundtrip() {
+        for kind in [SourceKind::GitHub, SourceKind::Discord] {
+            let s = kind.to_string();
+            let parsed: SourceKind = s.parse().unwrap();
+            assert_eq!(kind, parsed);
+        }
+    }
+
+    #[test]
+    fn test_source_kind_invalid_parse() {
+        assert!("".parse::<SourceKind>().is_err());
+        assert!("slack".parse::<SourceKind>().is_err());
     }
 }

@@ -2,13 +2,13 @@ use rusqlite::{params, Connection, Result as SqlResult};
 use std::sync::Mutex;
 
 use crate::error::HammurabiError;
-use crate::models::{IssueState, TrackedIssue, UsageEntry};
+use crate::models::{IssueState, SourceKind, TrackedIssue, UsageEntry};
 
 const ISSUE_COLUMNS: &str = "\
-    id, repo, github_issue_number, github_issue_title, state, spec_comment_id, \
-    spec_content, impl_pr_number, last_comment_id, last_pr_comment_id, \
-    previous_state, error_message, worktree_path, retry_count, review_count, \
-    review_feedback, bypass, created_at, updated_at";
+    id, source, external_id, repo, github_issue_number, github_issue_title, \
+    state, spec_comment_id, spec_content, impl_pr_number, last_comment_id, \
+    last_pr_comment_id, previous_state, error_message, worktree_path, \
+    retry_count, review_count, review_feedback, bypass, created_at, updated_at";
 
 fn select_issues(where_clause: &str) -> String {
     if where_clause.is_empty() {
@@ -223,10 +223,73 @@ impl Database {
                 })?;
         }
 
+        // Add source + external_id columns and rebuild the unique index.
+        // Pre-migration identity was (repo, github_issue_number); post-migration
+        // it is (source, repo, external_id) so non-GitHub sources (e.g. Discord)
+        // can share the schema. Existing rows migrate to source='github',
+        // external_id = github_issue_number::text. SQLite cannot drop a UNIQUE
+        // constraint, so this is done via table rebuild.
+        let has_source_col = conn.prepare("SELECT source FROM issues LIMIT 0").is_ok();
+        if table_exists && !has_source_col {
+            conn.execute_batch(
+                "ALTER TABLE issues RENAME TO issues_old;
+
+                CREATE TABLE issues (
+                    id INTEGER PRIMARY KEY,
+                    source TEXT NOT NULL DEFAULT 'github',
+                    external_id TEXT NOT NULL DEFAULT '',
+                    repo TEXT NOT NULL DEFAULT '',
+                    github_issue_number INTEGER NOT NULL,
+                    github_issue_title TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'Discovered',
+                    spec_comment_id INTEGER,
+                    spec_content TEXT,
+                    impl_pr_number INTEGER,
+                    last_comment_id INTEGER,
+                    last_pr_comment_id INTEGER,
+                    previous_state TEXT,
+                    error_message TEXT,
+                    worktree_path TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    review_count INTEGER NOT NULL DEFAULT 0,
+                    review_feedback TEXT,
+                    bypass INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(source, repo, external_id)
+                );
+
+                INSERT INTO issues (
+                    id, source, external_id, repo, github_issue_number, github_issue_title,
+                    state, spec_comment_id, spec_content, impl_pr_number,
+                    last_comment_id, last_pr_comment_id,
+                    previous_state, error_message, worktree_path,
+                    retry_count, review_count, review_feedback, bypass,
+                    created_at, updated_at
+                )
+                SELECT
+                    id, 'github' as source, CAST(github_issue_number AS TEXT) as external_id,
+                    repo, github_issue_number, github_issue_title,
+                    state, spec_comment_id, spec_content, impl_pr_number,
+                    last_comment_id, last_pr_comment_id,
+                    previous_state, error_message, worktree_path,
+                    retry_count, review_count, review_feedback, bypass,
+                    created_at, updated_at
+                FROM issues_old;
+
+                DROP TABLE issues_old;",
+            )
+            .map_err(|e| {
+                HammurabiError::Database(format!("source column migration failed: {}", e))
+            })?;
+        }
+
         // Create tables if they don't exist (fresh install or post-migration)
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS issues (
                 id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL DEFAULT 'github',
+                external_id TEXT NOT NULL DEFAULT '',
                 repo TEXT NOT NULL DEFAULT '',
                 github_issue_number INTEGER NOT NULL,
                 github_issue_title TEXT NOT NULL,
@@ -245,7 +308,7 @@ impl Database {
                 bypass INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                UNIQUE(repo, github_issue_number)
+                UNIQUE(source, repo, external_id)
             );
 
             CREATE TABLE IF NOT EXISTS usage_log (
@@ -283,9 +346,16 @@ impl Database {
         title: &str,
     ) -> Result<i64, HammurabiError> {
         let conn = self.conn();
+        let external_id = github_issue_number.to_string();
         conn.execute(
-                "INSERT OR IGNORE INTO issues (repo, github_issue_number, github_issue_title) VALUES (?1, ?2, ?3)",
-                params![repo, github_issue_number as i64, title],
+                "INSERT OR IGNORE INTO issues (source, external_id, repo, github_issue_number, github_issue_title) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    SourceKind::GitHub.as_str(),
+                    external_id,
+                    repo,
+                    github_issue_number as i64,
+                    title,
+                ],
             )
             .map_err(db_err)?;
         Ok(conn.last_insert_rowid())
@@ -297,13 +367,18 @@ impl Database {
         github_issue_number: u64,
     ) -> Result<Option<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
-        let sql = select_issues("repo = ?1 AND github_issue_number = ?2");
+        let sql = select_issues("source = ?1 AND repo = ?2 AND github_issue_number = ?3");
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
 
         let result = stmt
-            .query_row(params![repo, github_issue_number as i64], |row| {
-                row_to_tracked_issue(row)
-            })
+            .query_row(
+                params![
+                    SourceKind::GitHub.as_str(),
+                    repo,
+                    github_issue_number as i64,
+                ],
+                row_to_tracked_issue,
+            )
             .optional()
             .map_err(db_err)?;
 
@@ -319,13 +394,14 @@ impl Database {
         github_issue_number: u64,
     ) -> Result<Vec<TrackedIssue>, HammurabiError> {
         let conn = self.conn();
-        let sql = select_issues("github_issue_number = ?1");
+        let sql = select_issues("source = ?1 AND github_issue_number = ?2");
         let mut stmt = conn.prepare(&sql).map_err(db_err)?;
 
         let issues = stmt
-            .query_map(params![github_issue_number as i64], |row| {
-                row_to_tracked_issue(row)
-            })
+            .query_map(
+                params![SourceKind::GitHub.as_str(), github_issue_number as i64],
+                row_to_tracked_issue,
+            )
             .map_err(db_err)?
             .collect::<SqlResult<Vec<_>>>()
             .map_err(db_err)?;
@@ -626,29 +702,34 @@ impl Database {
 fn row_to_tracked_issue(row: &rusqlite::Row) -> SqlResult<TrackedIssue> {
     Ok(TrackedIssue {
         id: row.get(0)?,
-        repo: row.get(1)?,
-        github_issue_number: row.get::<_, i64>(2)? as u64,
-        title: row.get(3)?,
+        source: row
+            .get::<_, String>(1)?
+            .parse()
+            .unwrap_or(SourceKind::GitHub),
+        external_id: row.get(2)?,
+        repo: row.get(3)?,
+        github_issue_number: row.get::<_, i64>(4)? as u64,
+        title: row.get(5)?,
         state: row
-            .get::<_, String>(4)?
+            .get::<_, String>(6)?
             .parse()
             .unwrap_or(IssueState::Failed),
-        spec_comment_id: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
-        spec_content: row.get(6)?,
-        impl_pr_number: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
-        last_comment_id: row.get::<_, Option<i64>>(8)?.map(|v| v as u64),
-        last_pr_comment_id: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
+        spec_comment_id: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+        spec_content: row.get(8)?,
+        impl_pr_number: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
+        last_comment_id: row.get::<_, Option<i64>>(10)?.map(|v| v as u64),
+        last_pr_comment_id: row.get::<_, Option<i64>>(11)?.map(|v| v as u64),
         previous_state: row
-            .get::<_, Option<String>>(10)?
+            .get::<_, Option<String>>(12)?
             .and_then(|s| s.parse().ok()),
-        error_message: row.get(11)?,
-        worktree_path: row.get(12)?,
-        retry_count: row.get::<_, i64>(13).unwrap_or(0) as u32,
-        review_count: row.get::<_, i64>(14).unwrap_or(0) as u32,
-        review_feedback: row.get(15)?,
-        bypass: row.get::<_, i64>(16).unwrap_or(0) != 0,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
+        error_message: row.get(13)?,
+        worktree_path: row.get(14)?,
+        retry_count: row.get::<_, i64>(15).unwrap_or(0) as u32,
+        review_count: row.get::<_, i64>(16).unwrap_or(0) as u32,
+        review_feedback: row.get(17)?,
+        bypass: row.get::<_, i64>(18).unwrap_or(0) != 0,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
     })
 }
 
@@ -690,6 +771,15 @@ mod tests {
         assert!(issue.spec_content.is_none());
         assert!(issue.previous_state.is_none());
         assert!(issue.error_message.is_none());
+    }
+
+    #[test]
+    fn test_insert_populates_source_and_external_id() {
+        let db = test_db();
+        db.insert_issue("owner/repo", 42, "t").unwrap();
+        let issue = db.get_issue("owner/repo", 42).unwrap().unwrap();
+        assert_eq!(issue.source, SourceKind::GitHub);
+        assert_eq!(issue.external_id, "42");
     }
 
     #[test]
@@ -999,5 +1089,52 @@ mod tests {
         db.set_issue_bypass(issue.id, false).unwrap();
         let updated = db.get_issue("owner/repo", 1).unwrap().unwrap();
         assert!(!updated.bypass);
+    }
+
+    /// Pre-existing DB rows (written before the source/external_id columns
+    /// were introduced) must migrate to source='github' and external_id equal
+    /// to the GitHub issue number as text.
+    #[test]
+    fn test_migration_backfills_source_and_external_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Create the pre-migration schema (no source/external_id columns).
+        conn.execute_batch(
+            "CREATE TABLE issues (
+                id INTEGER PRIMARY KEY,
+                repo TEXT NOT NULL DEFAULT '',
+                github_issue_number INTEGER NOT NULL,
+                github_issue_title TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'Discovered',
+                spec_comment_id INTEGER,
+                spec_content TEXT,
+                impl_pr_number INTEGER,
+                last_comment_id INTEGER,
+                last_pr_comment_id INTEGER,
+                previous_state TEXT,
+                error_message TEXT,
+                worktree_path TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                review_count INTEGER NOT NULL DEFAULT 0,
+                review_feedback TEXT,
+                bypass INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(repo, github_issue_number)
+            );
+            INSERT INTO issues (repo, github_issue_number, github_issue_title, state)
+                VALUES ('owner/repo', 42, 'legacy issue', 'SpecDrafting');",
+        )
+        .unwrap();
+
+        let db = Database {
+            conn: Mutex::new(conn),
+        };
+        db.run_migrations().unwrap();
+
+        let issue = db.get_issue("owner/repo", 42).unwrap().unwrap();
+        assert_eq!(issue.source, SourceKind::GitHub);
+        assert_eq!(issue.external_id, "42");
+        assert_eq!(issue.github_issue_number, 42);
+        assert_eq!(issue.state, IssueState::SpecDrafting);
     }
 }
