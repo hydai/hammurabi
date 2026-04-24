@@ -56,15 +56,12 @@ pub fn spawn_child(
     Ok((child, pgid))
 }
 
-/// Expand `${VAR}` references in a config value against the process env.
-/// Supports a single `${VAR}` covering the whole value. Any other pattern
-/// is returned unchanged (including partial references like `prefix${X}`).
+/// Expand `${VAR}` references in an `[agents.*].env` value at spawn time.
+/// Delegates to [`crate::env_expand::expand_str`] so the syntax matches
+/// every other secret-bearing field in the config: `${VAR}` anywhere in
+/// the string, `$$` escapes a literal `$`, unknown vars resolve to empty.
 fn expand_env_refs(value: &str) -> String {
-    if let Some(stripped) = value.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
-        std::env::var(stripped).unwrap_or_default()
-    } else {
-        value.to_string()
-    }
+    crate::env_expand::expand_str(value)
 }
 
 /// Kill a process subtree previously set up via [`spawn_child`].
@@ -142,6 +139,20 @@ mod tests {
     #[test]
     fn non_placeholder_values_pass_through() {
         assert_eq!(expand_env_refs("plain"), "plain");
-        assert_eq!(expand_env_refs("prefix${VAR}"), "prefix${VAR}");
+    }
+
+    #[test]
+    fn expands_partial_refs() {
+        std::env::set_var("HAMMURABI_TEST_PREFIX", "xyz");
+        assert_eq!(
+            expand_env_refs("prefix-${HAMMURABI_TEST_PREFIX}"),
+            "prefix-xyz"
+        );
+        std::env::remove_var("HAMMURABI_TEST_PREFIX");
+    }
+
+    #[test]
+    fn dollar_escapes_itself() {
+        assert_eq!(expand_env_refs("$$literal"), "$literal");
     }
 }

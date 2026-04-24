@@ -20,6 +20,8 @@ mod config;
 mod db;
 #[path = "../src/discord.rs"]
 mod discord;
+#[path = "../src/env_expand.rs"]
+mod env_expand;
 #[path = "../src/error.rs"]
 mod error;
 #[path = "../src/github.rs"]

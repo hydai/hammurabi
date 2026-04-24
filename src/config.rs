@@ -6,6 +6,7 @@ use crate::access::{AllowUsers, RawAccess};
 use crate::acp::session::AcpAgentDef;
 use crate::agents::acp::default_agent_def;
 use crate::agents::AgentKind;
+use crate::env_expand::expand_str;
 use crate::error::HammurabiError;
 
 #[derive(Debug, Clone)]
@@ -602,7 +603,9 @@ async fn fetch_remote_config(url: &str) -> Result<String, HammurabiError> {
     })
 }
 
-fn build_config(raw: RawConfig) -> Result<Config, HammurabiError> {
+fn build_config(mut raw: RawConfig) -> Result<Config, HammurabiError> {
+    expand_raw_config(&mut raw);
+
     // --- Global defaults ---
     let mut poll_interval = raw.poll_interval.unwrap_or(60);
     env_override("poll_interval", &mut poll_interval);
@@ -901,7 +904,9 @@ fn resolve_sources(
                             .into(),
                     ));
                 }
-                let bot_token = expand_env(&d.bot_token);
+                // bot_token is already expanded by `expand_raw_config`; just
+                // enforce non-emptiness here so a missing `${TOKEN}` fails loudly.
+                let bot_token = d.bot_token.clone();
                 if bot_token.trim().is_empty() {
                     return Err(HammurabiError::Config(format!(
                         "Discord source for channel {} is missing bot_token",
@@ -935,16 +940,108 @@ fn resolve_sources(
     Ok(out)
 }
 
-/// Expand a single `${VAR}` form from the process environment. Leaves
-/// strings without `${` untouched. Used for `bot_token = "${DISCORD_BOT_TOKEN}"`.
-fn expand_env(s: &str) -> String {
-    let trimmed = s.trim();
-    if let Some(rest) = trimmed.strip_prefix("${") {
-        if let Some(var) = rest.strip_suffix('}') {
-            return std::env::var(var).unwrap_or_default();
+/// Apply `expand_str` to every secret-bearing or deploy-parameterizable
+/// string field on the raw config before validation. Fields that should
+/// stay literal (e.g. `[agents.*].env` values, which are expanded at spawn
+/// time so the child sees fresh env) are intentionally skipped here.
+fn expand_raw_config(raw: &mut RawConfig) {
+    if let Some(s) = raw.github_token.as_mut() {
+        *s = expand_str(s);
+    }
+    if let Some(app) = raw.github_app.as_mut() {
+        if let Some(s) = app.private_key_path.as_mut() {
+            *s = expand_str(s);
         }
     }
-    s.to_string()
+    if let Some(s) = raw.tracking_label.as_mut() {
+        *s = expand_str(s);
+    }
+    if let Some(s) = raw.bypass_label.as_mut() {
+        *s = expand_str(s);
+    }
+    if let Some(list) = raw.approvers.as_mut() {
+        for s in list {
+            *s = expand_str(s);
+        }
+    }
+    expand_hooks(raw.hooks.as_mut());
+    if let Some(s) = raw.repo.as_mut() {
+        *s = expand_str(s);
+    }
+    if let Some(repos) = raw.repos.as_mut() {
+        for r in repos {
+            if let Some(s) = r.repo.as_mut() {
+                *s = expand_str(s);
+            }
+            if let Some(s) = r.tracking_label.as_mut() {
+                *s = expand_str(s);
+            }
+            if let Some(list) = r.approvers.as_mut() {
+                for s in list {
+                    *s = expand_str(s);
+                }
+            }
+            expand_hooks(r.hooks.as_mut());
+        }
+    }
+    if let Some(sources) = raw.sources.as_mut() {
+        for src in sources {
+            match src {
+                RawSourceEntry::Discord(d) => {
+                    if let Some(s) = d.name.as_mut() {
+                        *s = expand_str(s);
+                    }
+                    d.channel_id = expand_str(&d.channel_id);
+                    d.repo = expand_str(&d.repo);
+                    d.bot_token = expand_str(&d.bot_token);
+                    for a in &mut d.approvers {
+                        *a = expand_str(a);
+                    }
+                    if let Some(s) = d.command_prefix.as_mut() {
+                        *s = expand_str(s);
+                    }
+                    for u in &mut d.access.allow_users {
+                        *u = expand_str(u);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(agents) = raw.agents.as_mut() {
+        for maybe in [
+            &mut agents.acp_claude,
+            &mut agents.acp_gemini,
+            &mut agents.acp_codex,
+        ] {
+            if let Some(def) = maybe {
+                if let Some(s) = def.command.as_mut() {
+                    *s = expand_str(s);
+                }
+                if let Some(args) = def.args.as_mut() {
+                    for a in args {
+                        *a = expand_str(a);
+                    }
+                }
+                // def.env stays literal — see spawn.rs::expand_env_refs.
+            }
+        }
+    }
+}
+
+fn expand_hooks(hooks: Option<&mut HooksConfig>) {
+    let Some(h) = hooks else { return };
+    if let Some(s) = h.after_create.as_mut() {
+        *s = expand_str(s);
+    }
+    if let Some(s) = h.before_run.as_mut() {
+        *s = expand_str(s);
+    }
+    if let Some(s) = h.after_run.as_mut() {
+        *s = expand_str(s);
+    }
+    if let Some(s) = h.before_remove.as_mut() {
+        *s = expand_str(s);
+    }
 }
 
 #[cfg(test)]
@@ -987,8 +1084,11 @@ mod tests {
     }
 
     fn parse_raw(toml_str: &str) -> Result<Config, HammurabiError> {
-        let raw: RawConfig =
+        let mut raw: RawConfig =
             toml::from_str(toml_str).map_err(|e| HammurabiError::Config(e.to_string()))?;
+        // Match production: expand `${VAR}` in secret-bearing fields before
+        // validation. Integration tests set the env var before calling this.
+        expand_raw_config(&mut raw);
 
         // Simplified parser for tests — uses Token auth, no env overrides
         let github_auth =

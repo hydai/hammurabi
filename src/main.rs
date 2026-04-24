@@ -7,6 +7,7 @@ mod db;
 mod discord;
 #[cfg(feature = "discord")]
 mod discord_serenity;
+mod env_expand;
 mod error;
 mod github;
 mod hooks;

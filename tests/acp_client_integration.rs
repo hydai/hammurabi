@@ -6,6 +6,8 @@
 mod acp;
 #[path = "../src/agents/mod.rs"]
 mod agents;
+#[path = "../src/env_expand.rs"]
+mod env_expand;
 #[path = "../src/error.rs"]
 mod error;
 
