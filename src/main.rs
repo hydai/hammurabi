@@ -1,3 +1,10 @@
+//! Hammurabi binary entry point.
+//!
+//! Parses the CLI (`clap`-derived `Cli` + `Command`), loads the config
+//! from a local path or `https://` URL, and dispatches to one of four
+//! subcommands: `watch` (main daemon loop), `status`, `retry`, `reset`.
+//! See `docs/architecture.md` for the overall module layout.
+
 mod access;
 mod acp;
 mod agents;

@@ -1,3 +1,23 @@
+//! State-machine transition runtime.
+//!
+//! One module per active edge (`spec_drafting`, `implementing`,
+//! `reviewing`, `completion`), each exposing a `run` that executes the
+//! transition's side effects (worktree create, AI invocation, PR push,
+//! comment post, hook fire, …) and returns the next `IssueState`.
+//!
+//! Shared machinery lives here:
+//! - `TransitionContext` bundles the `GitHubClient`, `AiAgent`,
+//!   `WorktreeManager`, `Database`, and `Publisher` so each transition
+//!   takes a single arg.
+//! - `run_ai_lifecycle` wraps AI invocations with retries, timeouts,
+//!   stall detection, and progress-comment streaming.
+//! - `publisher_for(issue)` picks `GithubPublisher`,
+//!   `DiscordPublisher`, or `MultiplexPublisher` based on
+//!   `issue.source`, so transitions are source-agnostic.
+//! - `seed_filename` chooses the agent-native instruction filename
+//!   (`CLAUDE.md` / `GEMINI.md` / `AGENTS.md`) based on the selected
+//!   `AgentKind`.
+
 pub mod completion;
 pub mod implementing;
 pub mod reviewing;

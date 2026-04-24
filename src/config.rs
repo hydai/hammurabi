@@ -1,3 +1,18 @@
+//! Configuration model and loader.
+//!
+//! Resolves `hammurabi.toml` from (in order) `--config` flag,
+//! `HAMMURABI_CONFIG_PATH`, the current working directory, or
+//! `$HOME/.config/hammurabi/`. `--config` also accepts `https://` URLs
+//! (1 MiB body cap, 30 s total timeout). Every string field runs through
+//! `env_expand::expand_str` for `${VAR}` interpolation, and secret
+//! fields (`github_token`, `bot_token`, `github_app.private_key_path`)
+//! have `*_file` siblings that read from disk — intended for K8s Secret
+//! volume mounts.
+//!
+//! Per-repo (`[[repos]]`) and per-task (`[spec]` / `[implement]` /
+//! `[review]`) blocks override global scalars with three-level
+//! precedence: task → repo → global → built-in default.
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

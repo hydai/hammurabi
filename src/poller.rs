@@ -1,3 +1,17 @@
+//! Daemon main loop and per-source intake.
+//!
+//! `run_daemon` iterates every configured `[[repos]]` entry on each
+//! poll cycle, driving one transition per tracked issue through the
+//! modules in `src/transitions/`. After the GitHub poll,
+//! `discord_intake_once` fires for every Discord `[[sources]]` entry
+//! targeting the repo, honouring the per-channel message cursor so a
+//! cold start doesn't re-play history.
+//!
+//! Also owns startup wiring: `build_agent_registry` resolves
+//! `AgentKind` → concrete `AiAgent` impls (Claude CLI + ACP variants),
+//! applies `[agents.acp_*]` subprocess overrides, and stores the
+//! registry in an `Arc` shared across transitions.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
