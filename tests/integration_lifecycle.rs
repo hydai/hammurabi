@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+#[path = "../src/access.rs"]
+mod access;
 #[path = "../src/acp/mod.rs"]
 mod acp;
 #[path = "../src/agents/mod.rs"]
@@ -14,6 +16,8 @@ mod approval;
 mod config;
 #[path = "../src/db.rs"]
 mod db;
+#[path = "../src/discord.rs"]
+mod discord;
 #[path = "../src/error.rs"]
 mod error;
 #[path = "../src/github.rs"]

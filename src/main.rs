@@ -1,8 +1,10 @@
+mod access;
 mod acp;
 mod agents;
 mod approval;
 mod config;
 mod db;
+mod discord;
 mod error;
 mod github;
 mod hooks;

@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::access::{AllowUsers, RawAccess};
 use crate::acp::session::AcpAgentDef;
 use crate::agents::acp::default_agent_def;
 use crate::agents::AgentKind;
@@ -93,12 +94,48 @@ struct RawRepoEntry {
     agent_kind: Option<AgentKind>,
 }
 
+/// Raw `[[sources]]` entry. Tagged by `kind`; currently only `discord`
+/// is supported. Non-Discord kinds parse as their matching variant.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum RawSourceEntry {
+    Discord(RawDiscordChannel),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawDiscordChannel {
+    /// Optional human-readable label; used in logs.
+    name: Option<String>,
+    channel_id: String,
+    /// Points at a configured `[[repos]]` entry (`owner/name`).
+    repo: String,
+    /// Env-expanded bot token. `${VAR}` is substituted from the
+    /// environment at load time.
+    bot_token: String,
+    /// Users allowed to `/confirm` the spec once it's drafted. Defaults
+    /// to the target repo's approvers if empty.
+    #[serde(default)]
+    approvers: Vec<String>,
+    /// Override the target repo's agent kind for Discord-originated work.
+    agent_kind: Option<AgentKind>,
+    /// Command prefix for `/confirm`, `/revise`, `/cancel`. Default `/`.
+    command_prefix: Option<String>,
+    /// Safety cap on back-and-forth `/revise` iterations.
+    max_draft_revisions: Option<u32>,
+    /// Access control (see `AllowUsers`).
+    #[serde(flatten)]
+    access: RawAccess,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
     // Legacy single-repo field (backward compat)
     repo: Option<String>,
     // Multi-repo array
     repos: Option<Vec<RawRepoEntry>>,
+    /// Alternative intake sources (Discord channels, future platforms).
+    /// Each entry references a `[[repos]]` entry by `owner/name`.
+    sources: Option<Vec<RawSourceEntry>>,
 
     poll_interval: Option<u64>,
     tracking_label: Option<String>,
@@ -241,13 +278,60 @@ impl RepoConfig {
     }
 }
 
+/// Resolved Discord intake configuration. One entry per Discord channel
+/// Hammurabi should listen on. Holds every field needed to (a) connect
+/// the bot, (b) enforce access control, and (c) route approved specs
+/// into the target GitHub repo at `/confirm`.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct DiscordChannelConfig {
+    pub name: String,
+    pub channel_id: u64,
+    /// `owner/name` — must resolve to a `RepoConfig` in `Config::repos`.
+    pub repo: String,
+    pub bot_token: String,
+    pub approvers: Vec<String>,
+    pub agent_kind: Option<AgentKind>,
+    pub command_prefix: String,
+    pub max_draft_revisions: u32,
+    pub allow: AllowUsers,
+}
+
+// Manual Debug so bot_token never leaks into tracing output.
+impl std::fmt::Debug for DiscordChannelConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscordChannelConfig")
+            .field("name", &self.name)
+            .field("channel_id", &self.channel_id)
+            .field("repo", &self.repo)
+            .field("bot_token", &"<redacted>")
+            .field("approvers", &self.approvers)
+            .field("agent_kind", &self.agent_kind)
+            .field("command_prefix", &self.command_prefix)
+            .field("max_draft_revisions", &self.max_draft_revisions)
+            .field("allow", &self.allow)
+            .finish()
+    }
+}
+
+/// Resolved intake source. Kept as an enum so future platforms (Slack,
+/// Teams, generic webhooks) slot in without breaking the downstream shape.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum SourceEntry {
+    Discord(DiscordChannelConfig),
+}
+
 /// Global daemon configuration (shared across all repos).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Config {
     pub poll_interval: u64,
     pub api_retry_count: u32,
     pub github_auth: GitHubAuth,
     pub repos: Vec<RepoConfig>,
+    /// Non-GitHub-issue intake sources (Discord channels, ...). Empty by default.
+    pub sources: Vec<SourceEntry>,
     /// Resolved subprocess definitions for each ACP kind. Built from
     /// hard-coded defaults, overridden by any `[agents.*]` sections in the
     /// config TOML.
@@ -369,6 +453,7 @@ pub fn load() -> Result<Config, HammurabiError> {
         RawConfig {
             repo: None,
             repos: None,
+            sources: None,
             poll_interval: None,
             tracking_label: None,
             stale_timeout_days: None,
@@ -640,13 +725,102 @@ pub fn load() -> Result<Config, HammurabiError> {
         });
     }
 
+    let sources = resolve_sources(raw.sources, &repo_configs)?;
+
     Ok(Config {
         poll_interval,
         api_retry_count,
         github_auth,
         repos: repo_configs,
+        sources,
         agents,
     })
+}
+
+/// Resolve raw `[[sources]]` entries into runtime `SourceEntry`s. Errors if
+/// a source references a `repo` that isn't declared in `[[repos]]`, if
+/// access rules conflict (both `allow_all_users` and `allow_users` set),
+/// or if a Discord source is missing required fields (channel_id, token).
+fn resolve_sources(
+    raw: Option<Vec<RawSourceEntry>>,
+    repos: &[RepoConfig],
+) -> Result<Vec<SourceEntry>, HammurabiError> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(raw.len());
+    let mut seen_channels = std::collections::HashSet::new();
+    for entry in raw {
+        match entry {
+            RawSourceEntry::Discord(d) => {
+                if !repos.iter().any(|r| r.repo == d.repo) {
+                    return Err(HammurabiError::Config(format!(
+                        "source references repo '{}' which is not declared in [[repos]]",
+                        d.repo
+                    )));
+                }
+                let channel_id: u64 = d.channel_id.parse().map_err(|e| {
+                    HammurabiError::Config(format!(
+                        "invalid channel_id '{}' for Discord source: {}",
+                        d.channel_id, e
+                    ))
+                })?;
+                if !seen_channels.insert(channel_id) {
+                    return Err(HammurabiError::Config(format!(
+                        "duplicate Discord channel_id: {}",
+                        channel_id
+                    )));
+                }
+                if d.access.allow_all_users && !d.access.allow_users.is_empty() {
+                    return Err(HammurabiError::Config(
+                        "set either 'allow_all_users = true' or 'allow_users = [..]', not both"
+                            .into(),
+                    ));
+                }
+                let bot_token = expand_env(&d.bot_token);
+                if bot_token.trim().is_empty() {
+                    return Err(HammurabiError::Config(format!(
+                        "Discord source for channel {} is missing bot_token",
+                        channel_id
+                    )));
+                }
+                let approvers = if d.approvers.is_empty() {
+                    // Inherit from the target repo's approvers.
+                    repos
+                        .iter()
+                        .find(|r| r.repo == d.repo)
+                        .map(|r| r.approvers.clone())
+                        .unwrap_or_default()
+                } else {
+                    d.approvers
+                };
+                out.push(SourceEntry::Discord(DiscordChannelConfig {
+                    name: d.name.unwrap_or_else(|| format!("discord:{}", channel_id)),
+                    channel_id,
+                    repo: d.repo,
+                    bot_token,
+                    approvers,
+                    agent_kind: d.agent_kind,
+                    command_prefix: d.command_prefix.unwrap_or_else(|| "/".to_string()),
+                    max_draft_revisions: d.max_draft_revisions.unwrap_or(5),
+                    allow: AllowUsers::from_raw(d.access.allow_all_users, d.access.allow_users),
+                }));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Expand a single `${VAR}` form from the process environment. Leaves
+/// strings without `${` untouched. Used for `bot_token = "${DISCORD_BOT_TOKEN}"`.
+fn expand_env(s: &str) -> String {
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed.strip_prefix("${") {
+        if let Some(var) = rest.strip_suffix('}') {
+            return std::env::var(var).unwrap_or_default();
+        }
+    }
+    s.to_string()
 }
 
 #[cfg(test)]
@@ -777,11 +951,14 @@ mod tests {
             });
         }
 
+        let sources = resolve_sources(raw.sources, &repo_configs)?;
+
         Ok(Config {
             poll_interval: raw.poll_interval.unwrap_or(60),
             api_retry_count: raw.api_retry_count.unwrap_or(3),
             github_auth,
             repos: repo_configs,
+            sources,
             agents,
         })
     }
@@ -1207,5 +1384,164 @@ mod tests {
             config.repos[0].bypass_label.as_deref(),
             Some("hammurabi-bypass")
         );
+    }
+
+    // --- Discord source parsing tests ---
+
+    #[test]
+    fn test_discord_source_parses() {
+        std::env::set_var("HAMMURABI_TEST_TOKEN", "bot-abc");
+        let toml = r#"
+            repo = "owner/hammurabi"
+            ai_model = "claude-sonnet-4-6"
+            approvers = ["hydai"]
+            github_token = "ghp_test"
+
+            [[sources]]
+            kind = "discord"
+            name = "intake"
+            channel_id = "1234567890"
+            repo = "owner/hammurabi"
+            bot_token = "${HAMMURABI_TEST_TOKEN}"
+            approvers = ["hydai"]
+            allow_users = ["hydai"]
+        "#;
+        let config = parse_raw(toml).unwrap();
+        std::env::remove_var("HAMMURABI_TEST_TOKEN");
+        assert_eq!(config.sources.len(), 1);
+        match &config.sources[0] {
+            SourceEntry::Discord(d) => {
+                assert_eq!(d.name, "intake");
+                assert_eq!(d.channel_id, 1234567890);
+                assert_eq!(d.repo, "owner/hammurabi");
+                assert_eq!(d.bot_token, "bot-abc");
+                assert_eq!(d.approvers, vec!["hydai".to_string()]);
+                assert_eq!(d.command_prefix, "/");
+                assert_eq!(d.max_draft_revisions, 5);
+                assert!(!d.allow.is_allowed("eve"));
+                assert!(d.allow.is_allowed("hydai"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_discord_source_rejects_unknown_repo() {
+        let toml = r#"
+            repo = "owner/hammurabi"
+            ai_model = "claude-sonnet-4-6"
+            approvers = ["hydai"]
+            github_token = "ghp_test"
+
+            [[sources]]
+            kind = "discord"
+            channel_id = "1"
+            repo = "owner/other"
+            bot_token = "tok"
+            allow_users = ["hydai"]
+        "#;
+        let err = parse_raw(toml).unwrap_err();
+        assert!(err.to_string().contains("owner/other"));
+    }
+
+    #[test]
+    fn test_discord_source_allow_all_and_allow_users_conflicts() {
+        let toml = r#"
+            repo = "owner/hammurabi"
+            ai_model = "claude-sonnet-4-6"
+            approvers = ["hydai"]
+            github_token = "ghp_test"
+
+            [[sources]]
+            kind = "discord"
+            channel_id = "1"
+            repo = "owner/hammurabi"
+            bot_token = "tok"
+            allow_all_users = true
+            allow_users = ["hydai"]
+        "#;
+        let err = parse_raw(toml).unwrap_err();
+        assert!(err.to_string().contains("allow_all_users"));
+    }
+
+    #[test]
+    fn test_discord_source_duplicate_channel_rejected() {
+        let toml = r#"
+            repo = "owner/hammurabi"
+            ai_model = "claude-sonnet-4-6"
+            approvers = ["hydai"]
+            github_token = "ghp_test"
+
+            [[sources]]
+            kind = "discord"
+            channel_id = "111"
+            repo = "owner/hammurabi"
+            bot_token = "tok"
+            allow_users = ["hydai"]
+
+            [[sources]]
+            kind = "discord"
+            channel_id = "111"
+            repo = "owner/hammurabi"
+            bot_token = "tok"
+            allow_users = ["hydai"]
+        "#;
+        let err = parse_raw(toml).unwrap_err();
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn test_discord_source_empty_approvers_inherits_from_repo() {
+        let toml = r#"
+            repo = "owner/hammurabi"
+            ai_model = "claude-sonnet-4-6"
+            approvers = ["hydai", "teammate"]
+            github_token = "ghp_test"
+
+            [[sources]]
+            kind = "discord"
+            channel_id = "1"
+            repo = "owner/hammurabi"
+            bot_token = "tok"
+            allow_users = ["hydai"]
+        "#;
+        let config = parse_raw(toml).unwrap();
+        match &config.sources[0] {
+            SourceEntry::Discord(d) => {
+                assert_eq!(
+                    d.approvers,
+                    vec!["hydai".to_string(), "teammate".to_string()]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_discord_debug_redacts_token() {
+        let cfg = DiscordChannelConfig {
+            name: "n".into(),
+            channel_id: 1,
+            repo: "o/r".into(),
+            bot_token: "super-secret-token".into(),
+            approvers: vec![],
+            agent_kind: None,
+            command_prefix: "/".into(),
+            max_draft_revisions: 5,
+            allow: AllowUsers::All,
+        };
+        let rendered = format!("{:?}", cfg);
+        assert!(!rendered.contains("super-secret-token"));
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_no_sources_parses_as_empty_vec() {
+        let toml = r#"
+            repo = "owner/r"
+            ai_model = "m"
+            approvers = ["alice"]
+            github_token = "ghp_test"
+        "#;
+        let config = parse_raw(toml).unwrap();
+        assert!(config.sources.is_empty());
     }
 }
