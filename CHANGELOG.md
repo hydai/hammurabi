@@ -1,4 +1,11 @@
 # Changelog
+## 0.1.3 (2026-04-24)
+
+### Fixes
+
+- kebab-case agent_kind everywhere to match AgentKind enum
+- correct docker/build-push-action v6.18.0 SHA pin
+
 ## 0.1.2 (2026-04-24)
 
 ### Features
