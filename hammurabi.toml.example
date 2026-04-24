@@ -160,7 +160,14 @@ approvers = ["your-github-username"]
 # allow_users = ["hydai", "teammate"]       # explicit allowlist
 # # allow_all_users = true                  # wildcard
 #
-# NOTE: the Serenity-backed Discord runtime is implemented in-tree behind
-# mocks and exercised by `tests/integration_discord_lifecycle.rs`. A real
-# Gateway-connected client is pending — until then, `[[sources]]` entries
-# are parsed and validated but not polled. See the README for status.
+# NOTE: the Discord runtime is feature-gated behind the `discord` Cargo
+# feature:
+#
+#     cargo build --release --features discord
+#     cargo run  --release --features discord watch
+#
+# Without that feature the daemon still compiles and every other intake
+# path (GitHub label polling) works as before; Discord sources log a
+# warning and are skipped. The shipped runtime uses HTTP polling on each
+# poll tick; a real-time Gateway listener is a future upgrade that slots
+# into the same `DiscordClient` trait without breaking the config shape.

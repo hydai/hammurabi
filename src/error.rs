@@ -20,6 +20,10 @@ pub enum HammurabiError {
     #[error("ACP protocol error: {0}")]
     Acp(String),
 
+    #[error("Discord API error: {0}")]
+    #[allow(dead_code)]
+    Discord(String),
+
     #[error("worktree error: {0}")]
     Worktree(String),
 

@@ -5,6 +5,8 @@ mod approval;
 mod config;
 mod db;
 mod discord;
+#[cfg(feature = "discord")]
+mod discord_serenity;
 mod error;
 mod github;
 mod hooks;

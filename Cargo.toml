@@ -23,6 +23,16 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Discord integration is feature-gated so builds that only use GitHub
+# intake don't pay the serenity compile cost. `http`/`model`/`builder`
+# are enough for the polling-based runtime we ship in Phase 5; the full
+# Gateway client (`client` + `gateway` features) is a future upgrade.
+serenity = { version = "0.12", default-features = false, features = ["builder", "http", "model", "rustls_backend"], optional = true }
+
+[features]
+default = []
+discord = ["dep:serenity"]
+
 [profile.dev.package."*"]
 debug = false
 

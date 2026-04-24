@@ -90,11 +90,27 @@ tests/
 
 ## Discord intake status
 
-Phase 4 ships the complete Discord-sourced lifecycle under mocks — the
-state machine, approval grammar, intake handler, and end-to-end test are
-all in-tree. The Serenity-backed real-runtime wiring (`SerenityDiscordClient`
-+ a Gateway task spawned from `run_daemon`) is a future PR: the
-`[[sources]]` config currently parses and validates, but the poll loop
-does not yet drive `discord_intake_once` against a live token. See the
-plan at `~/.claude/plans/analyze-tmp-openab-i-would-ticklish-squid.md`
-for the staged rollout.
+The Discord runtime ships behind the `discord` Cargo feature:
+
+```bash
+cargo build --release --features discord
+cargo run  --release --features discord watch
+```
+
+Default builds (no feature) still compile and run; `[[sources]]` entries
+log a warning and are skipped. With the feature on, `SerenityDiscordClient`
+talks to the Discord REST API for fetch / post / edit / start-thread, and
+`run_daemon`:
+
+1. Connects via `GET /users/@me` to resolve the bot's own id.
+2. Seeds a per-channel cursor from the most recent message so a cold
+   start doesn't re-play history.
+3. After each repo's `poll_cycle`, calls `discord_intake_once` for every
+   Discord source targeting that repo, advancing the cursor.
+
+Phase 4's `tests/integration_discord_lifecycle.rs` continues to exercise
+the entire lifecycle under mocks (feature-independent). The Gateway
+WebSocket path (real-time UX instead of tick-based polling) is a future
+upgrade behind the same trait — add `client`/`gateway` to serenity's
+features, spawn an `EventHandler` task in `run_daemon`, and bridge
+events into the existing handlers.

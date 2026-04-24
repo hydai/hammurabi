@@ -9,9 +9,10 @@ use crate::access::AllowUsers;
 use crate::agents::acp::AcpAgent;
 use crate::agents::{AgentKind, AgentRegistry, AiAgent, ClaudeCliAgent};
 use crate::approval::{self, CommentApprovalResult, DiscordApprovalResult, PrApprovalResult};
-use crate::config::{self, DiscordChannelConfig, GitHubAuth};
+use crate::config::{self, DiscordChannelConfig, GitHubAuth, SourceEntry};
 use crate::config::{Config, RepoConfig};
 use crate::db::Database;
+use crate::discord::DiscordClient;
 use crate::error::HammurabiError;
 use crate::github::{GitHubClient, OctocrabClient};
 use crate::lock::LockFile;
@@ -50,10 +51,60 @@ struct RepoRuntime {
     /// one configured `[[sources]]` entry targets this repo; the poller
     /// uses it both for intake polling and for the `DiscordPublisher`
     /// handed to transitions via `TransitionContext::publisher_for`.
-    discord: Option<Arc<dyn crate::discord::DiscordClient>>,
+    discord: Option<Arc<dyn DiscordClient>>,
     publisher: Arc<dyn crate::publisher::Publisher>,
     worktree: Arc<dyn WorktreeManager>,
     config: Arc<RepoConfig>,
+}
+
+/// Build a runtime `DiscordClient` for the given source, or return `None`
+/// when the `discord` Cargo feature is disabled. The bot's own user id is
+/// resolved via `GET /users/@me` so intake can detect @mentions without
+/// extra round-trips.
+#[allow(unused_variables)]
+async fn build_discord_client(cfg: &DiscordChannelConfig) -> Option<Arc<dyn DiscordClient>> {
+    #[cfg(feature = "discord")]
+    {
+        match crate::discord_serenity::SerenityDiscordClient::connect(&cfg.bot_token).await {
+            Ok(c) => Some(Arc::new(c)),
+            Err(e) => {
+                tracing::error!(
+                    channel_id = cfg.channel_id,
+                    repo = %cfg.repo,
+                    "Failed to connect Discord client: {}",
+                    e
+                );
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "discord"))]
+    {
+        tracing::warn!(
+            channel_id = cfg.channel_id,
+            repo = %cfg.repo,
+            "Discord source configured but `discord` Cargo feature is off — \
+             rebuild with `cargo build --release --features discord` to enable."
+        );
+        None
+    }
+}
+
+/// Seed per-channel cursors at startup so we don't replay the entire
+/// backlog on a cold start. Uses the latest message id visible at init
+/// as the baseline; any message posted after that becomes "new".
+async fn seed_discord_cursor(client: &dyn DiscordClient, channel_id: u64) -> Option<u64> {
+    match client.fetch_new_messages(channel_id, None).await {
+        Ok(msgs) => msgs.iter().map(|m| m.id).max(),
+        Err(e) => {
+            tracing::warn!(
+                channel_id,
+                "Failed to seed Discord cursor; starting from beginning: {}",
+                e
+            );
+            None
+        }
+    }
 }
 
 pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
@@ -94,6 +145,48 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
         )
         .await?;
         cached_runtimes.insert(repo_config.repo.clone(), runtime);
+    }
+
+    // Wire Discord clients to the runtimes of their target repos. Each
+    // `[[sources]]` entry's `repo` field must match a configured repo;
+    // the config loader already rejects orphans, so this only logs on
+    // transient connect failures (bad token, network blip, ...). If
+    // multiple Discord sources target the same repo we attach the first
+    // successful client — MVP assumption is one channel per repo.
+    let mut discord_cursors: HashMap<u64, Option<u64>> = HashMap::new();
+    for source in &config.sources {
+        let SourceEntry::Discord(d) = source;
+        let runtime = match cached_runtimes.get_mut(&d.repo) {
+            Some(r) => r,
+            None => {
+                tracing::error!(
+                    channel = d.channel_id,
+                    repo = %d.repo,
+                    "Discord source's repo not in cached runtimes — skipping"
+                );
+                continue;
+            }
+        };
+        if runtime.discord.is_some() {
+            tracing::warn!(
+                repo = %d.repo,
+                channel = d.channel_id,
+                "Repo already has a Discord client bound — keeping the first"
+            );
+            continue;
+        }
+        let Some(client) = build_discord_client(d).await else {
+            continue;
+        };
+        let cursor = seed_discord_cursor(&*client, d.channel_id).await;
+        discord_cursors.insert(d.channel_id, cursor);
+        runtime.discord = Some(client);
+        tracing::info!(
+            repo = %d.repo,
+            channel = d.channel_id,
+            seeded_at = ?cursor,
+            "Discord client attached"
+        );
     }
 
     // Backfill repo column for existing data (single-repo migration)
@@ -230,6 +323,34 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
                         "Poll cycle error: {}",
                         e
                     );
+                }
+
+                // Discord intake: for every [[sources]] entry targeting
+                // this repo, pull new @mentions and drive them through
+                // the existing `discord_intake_once` pipeline.
+                for source in &current_config.sources {
+                    let SourceEntry::Discord(d) = source;
+                    if d.repo != repo_config.repo {
+                        continue;
+                    }
+                    if ctx.discord.is_none() {
+                        // Feature disabled or connect failed at startup.
+                        continue;
+                    }
+                    let since = discord_cursors.get(&d.channel_id).copied().flatten();
+                    match discord_intake_once(&ctx, d, since).await {
+                        Ok(new_cursor) => {
+                            discord_cursors.insert(d.channel_id, new_cursor);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                repo = %repo_config.repo,
+                                channel = d.channel_id,
+                                "Discord intake error: {}",
+                                e
+                            );
+                        }
+                    }
                 }
             }
         }
