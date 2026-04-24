@@ -5,15 +5,16 @@ A CLI daemon that monitors one or more GitHub repositories' issue boards, orches
 ## How It Works
 
 ```
-Issue Labeled → Spec Drafted → /approve → Implementation PR → Human Merge → Done
+Issue Labeled → Spec Drafted → /approve → Implementation PR → Self-Review → Human Merge → Done
 ```
 
 1. **Discover** -- The daemon polls for issues with the `hammurabi` label (must be applied by an authorized approver)
 2. **Spec** -- An AI agent analyzes the issue and repo, then posts a spec as an issue comment
 3. **Approve** -- An approver replies `/approve` to proceed, or provides feedback to revise the spec
 4. **Implement** -- The AI agent implements the approved spec in a git worktree and opens a PR
-5. **Review** -- Reviewers can leave PR feedback; the agent revises and re-pushes to the same PR
-6. **Complete** -- Once the PR is merged by a human, the issue is marked done
+5. **Self-review** -- The agent re-reads its own diff and pushes follow-up fixes (bounded by `review_max_iterations`, default 2)
+6. **Review** -- Human reviewers can leave PR feedback; the agent revises and re-pushes to the same PR
+7. **Complete** -- Once the PR is merged by a human, the issue is marked done
 
 Human approval is required at every stage. The daemon never merges a PR or auto-approves.
 
@@ -40,7 +41,7 @@ cargo install --path .
 docker run --rm -v $(pwd)/hammurabi.toml:/etc/hammurabi/hammurabi.toml:ro \
   -v hammurabi-data:/var/lib/hammurabi \
   -e GITHUB_TOKEN=$GITHUB_TOKEN \
-  ghcr.io/hydai/hammurabi-claude:latest
+  ghcr.io/hydai/hammurabi-claude:v0.1.2
 ```
 
 **Kubernetes** (Helm chart or raw manifests — see [Running on Kubernetes](#running-on-kubernetes)):
@@ -246,10 +247,10 @@ Hooks can be configured globally or per-repo within `[[repos]]` entries.
 Each tracked issue moves through these states:
 
 ```
-Discovered → SpecDrafting → AwaitSpecApproval → Implementing → AwaitPRApproval → Done
+Discovered → SpecDrafting → AwaitSpecApproval → Implementing → Reviewing → AwaitPRApproval → Done
 ```
 
-Any active state can transition to `Failed` (after exhausting `ai_max_retries` automatic retries). Failed issues can be retried via `/retry` comment or `hammurabi retry`. Issues with a `blocked` label are skipped during processing.
+`Reviewing` is a self-review loop: after opening the implementation PR, the agent re-reads its diff and can push follow-up commits, bounded by `review_max_iterations` (default 2, minimum 1). Any active state can transition to `Failed` (after exhausting `ai_max_retries` automatic retries). Failed issues can be retried via `/retry` comment or `hammurabi retry`. Issues with a `blocked` label are skipped during processing.
 
 ## Approval Gates
 
@@ -278,23 +279,25 @@ For trusted issues, set `bypass_label` in config (e.g., `"hammurabi-bypass"`). W
 
 Four image variants, one per supported `agent_kind`:
 
-| Image                          | Bundled agent CLI                              | Covers `agent_kind`               |
-| ------------------------------ | ---------------------------------------------- | --------------------------------- |
-| `ghcr.io/hydai/hammurabi-base`   | none (extend via `FROM`)                       | any, once you install an agent    |
-| `ghcr.io/hydai/hammurabi-claude` | `@anthropic-ai/claude-code` + `@agentclientprotocol/claude-agent-acp` | `claude_cli`, `acp_claude`        |
-| `ghcr.io/hydai/hammurabi-gemini` | `@google/gemini-cli`                           | `acp_gemini`                      |
-| `ghcr.io/hydai/hammurabi-codex`  | `@openai/codex` + `@zed-industries/codex-acp`  | `acp_codex`                       |
+| Image                            | Bundled agent CLI                                                     | Covers `agent_kind`          |
+| -------------------------------- | --------------------------------------------------------------------- | ---------------------------- |
+| `ghcr.io/hydai/hammurabi-base`   | none (extend via `FROM`)                                              | any, once you install an agent |
+| `ghcr.io/hydai/hammurabi-claude` | `@anthropic-ai/claude-code` + `@agentclientprotocol/claude-agent-acp` | `claude-cli`, `acp-claude`   |
+| `ghcr.io/hydai/hammurabi-gemini` | `@google/gemini-cli`                                                  | `acp-gemini`                 |
+| `ghcr.io/hydai/hammurabi-codex`  | `@openai/codex` + `@zed-industries/codex-acp`                         | `acp-codex`                  |
 
 Every image runs as UID 1000, uses `tini` as PID 1, expects the config at `/etc/hammurabi/hammurabi.toml`, and keeps state under `/var/lib/hammurabi`.
 
 ### Quick start
 
 ```bash
+# Pin to a released tag — images are versioned (e.g. v0.1.2) via CI release,
+# no moving `:latest` is published. See GHCR for the current tag list.
 docker run -d --name hammurabi \
   -e GITHUB_TOKEN=ghp_xxxx \
   -v $(pwd)/hammurabi.toml:/etc/hammurabi/hammurabi.toml:ro \
   -v hammurabi-data:/var/lib/hammurabi \
-  ghcr.io/hydai/hammurabi-claude:latest
+  ghcr.io/hydai/hammurabi-claude:v0.1.2
 
 docker exec hammurabi hammurabi status
 docker stop --time 30 hammurabi   # graceful SIGTERM drain
@@ -311,7 +314,7 @@ Per-variant build args pin agent CLI versions — see [`deploy/docker/README.md`
 ### Extending the base image
 
 ```dockerfile
-FROM ghcr.io/hydai/hammurabi-base:latest
+FROM ghcr.io/hydai/hammurabi-base:v0.1.2
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends my-agent-cli \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -327,7 +330,7 @@ Hammurabi ships two installation paths. Both assume **one replica** (the PID loc
 ```bash
 helm install hammurabi oci://ghcr.io/hydai/charts/hammurabi \
   --namespace hammurabi --create-namespace \
-  --set agent=acp_claude \
+  --set agent=acp-claude \
   --set secrets.data.github_token=ghp_xxx
 ```
 
