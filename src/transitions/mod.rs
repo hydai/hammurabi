@@ -6,7 +6,7 @@ pub mod spec_drafting;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::claude::{AiAgent, AiInvocation, AiResult};
+use crate::agents::{AgentKind, AiAgent, AiInvocation, AiResult};
 use crate::config::RepoConfig;
 use crate::db::Database;
 use crate::error::HammurabiError;
@@ -99,6 +99,7 @@ pub(crate) async fn run_ai_lifecycle(
     let ai_result = ctx
         .ai
         .invoke(AiInvocation {
+            agent_kind: AgentKind::ClaudeCli,
             model: model.clone(),
             max_turns,
             effort,

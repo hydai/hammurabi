@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::agents::ClaudeCliAgent;
 use crate::approval::{self, CommentApprovalResult, PrApprovalResult};
-use crate::claude::ClaudeCliAgent;
 use crate::config::{self, GitHubAuth};
 use crate::config::{Config, RepoConfig};
 use crate::db::Database;
@@ -47,7 +47,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     let token_provider = build_token_provider(&config.github_auth)?;
 
     // Initialize AI agent (shared, stateless)
-    let ai: Arc<dyn crate::claude::AiAgent> = Arc::new(ClaudeCliAgent::new());
+    let ai: Arc<dyn crate::agents::AiAgent> = Arc::new(ClaudeCliAgent::new());
 
     // Initialize per-repo runtimes
     let repos_dir = base_dir.join("repos");
@@ -825,7 +825,7 @@ async fn reconcile(ctx: &TransitionContext) -> Result<(), HammurabiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude::mock::MockAiAgent;
+    use crate::agents::mock::MockAiAgent;
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::GitHubIssue;

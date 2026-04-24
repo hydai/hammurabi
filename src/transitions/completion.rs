@@ -58,7 +58,7 @@ pub async fn check(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude::mock::MockAiAgent;
+    use crate::agents::mock::MockAiAgent;
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::PrStatus;

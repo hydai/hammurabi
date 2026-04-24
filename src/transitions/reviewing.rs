@@ -336,8 +336,8 @@ pub async fn execute(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude::mock::MockAiAgent;
-    use crate::claude::AiResult;
+    use crate::agents::mock::MockAiAgent;
+    use crate::agents::{AgentKind, AiResult};
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::GitHubIssue;
@@ -383,6 +383,8 @@ mod tests {
             session_id: Some("sess-review".to_string()),
             input_tokens: 200,
             output_tokens: 100,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         });
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
@@ -431,6 +433,8 @@ mod tests {
             session_id: Some("sess-review-fail".to_string()),
             input_tokens: 200,
             output_tokens: 100,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         });
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
@@ -483,6 +487,8 @@ mod tests {
             session_id: Some("sess-review-max".to_string()),
             input_tokens: 200,
             output_tokens: 100,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         });
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
@@ -527,6 +533,8 @@ mod tests {
             session_id: Some("sess-unparseable".to_string()),
             input_tokens: 100,
             output_tokens: 50,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         });
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));

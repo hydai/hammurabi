@@ -201,8 +201,8 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claude::mock::MockAiAgent;
-    use crate::claude::AiResult;
+    use crate::agents::mock::MockAiAgent;
+    use crate::agents::{AgentKind, AiResult};
     use crate::db::Database;
     use crate::github::mock::MockGitHubClient;
     use crate::github::GitHubIssue;
@@ -232,6 +232,8 @@ mod tests {
             session_id: Some("sess-1".to_string()),
             input_tokens: 500,
             output_tokens: 300,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         });
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
@@ -331,6 +333,8 @@ mod tests {
             session_id: Some("sess-2".to_string()),
             input_tokens: 600,
             output_tokens: 400,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         });
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
@@ -402,6 +406,8 @@ mod tests {
             session_id: Some("sess-review-rev".to_string()),
             input_tokens: 600,
             output_tokens: 400,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         });
 
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));

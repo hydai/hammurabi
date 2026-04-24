@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
+#[path = "../src/agents/mod.rs"]
+mod agents;
 #[path = "../src/approval.rs"]
 mod approval;
-#[path = "../src/claude.rs"]
-mod claude;
 #[path = "../src/config.rs"]
 mod config;
 #[path = "../src/db.rs"]
@@ -29,8 +29,8 @@ mod transitions;
 #[path = "../src/worktree.rs"]
 mod worktree;
 
-use claude::mock::MockAiAgent;
-use claude::AiResult;
+use agents::mock::MockAiAgent;
+use agents::{AgentKind, AiResult};
 use config::RepoConfig;
 use db::Database;
 use github::mock::MockGitHubClient;
@@ -87,6 +87,8 @@ async fn test_full_lifecycle() {
             session_id: Some("sess-spec".to_string()),
             input_tokens: 500,
             output_tokens: 300,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         },
     );
     // Implementation response (default fallback)
@@ -95,6 +97,8 @@ async fn test_full_lifecycle() {
         session_id: Some("sess-impl".to_string()),
         input_tokens: 1000,
         output_tokens: 500,
+        agent_kind: AgentKind::ClaudeCli,
+        tool_summary: Vec::new(),
     });
 
     let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
@@ -214,6 +218,8 @@ async fn test_bypass_spec_auto_approval() {
             session_id: Some("sess-spec".to_string()),
             input_tokens: 200,
             output_tokens: 100,
+            agent_kind: AgentKind::ClaudeCli,
+            tool_summary: Vec::new(),
         },
     );
     ai.set_default_response(AiResult {
@@ -221,6 +227,8 @@ async fn test_bypass_spec_auto_approval() {
         session_id: Some("sess-impl".to_string()),
         input_tokens: 400,
         output_tokens: 200,
+        agent_kind: AgentKind::ClaudeCli,
+        tool_summary: Vec::new(),
     });
 
     let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));

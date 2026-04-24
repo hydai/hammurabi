@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
+#[path = "../src/agents/mod.rs"]
+mod agents;
 #[path = "../src/approval.rs"]
 mod approval;
-#[path = "../src/claude.rs"]
-mod claude;
 #[path = "../src/config.rs"]
 mod config;
 #[path = "../src/db.rs"]
@@ -27,8 +27,8 @@ mod transitions;
 #[path = "../src/worktree.rs"]
 mod worktree;
 
-use claude::mock::MockAiAgent;
-use claude::AiResult;
+use agents::mock::MockAiAgent;
+use agents::{AgentKind, AiResult};
 use config::RepoConfig;
 use db::Database;
 use github::mock::MockGitHubClient;
@@ -119,6 +119,8 @@ async fn test_retry_after_spec_failure() {
         session_id: None,
         input_tokens: 100,
         output_tokens: 50,
+        agent_kind: AgentKind::ClaudeCli,
+        tool_summary: Vec::new(),
     });
 
     // Should succeed now
@@ -197,6 +199,8 @@ async fn test_implementation_failure_and_retry() {
         session_id: None,
         input_tokens: 100,
         output_tokens: 50,
+        agent_kind: AgentKind::ClaudeCli,
+        tool_summary: Vec::new(),
     });
 
     let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
