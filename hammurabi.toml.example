@@ -1,6 +1,23 @@
 # Hammurabi configuration
-# Search order: ./hammurabi.toml, then ~/.config/hammurabi/hammurabi.toml
-# Environment variables override with HAMMURABI_ prefix (e.g., HAMMURABI_POLL_INTERVAL=30)
+#
+# Search order:
+#   1. --config <path-or-url> CLI flag
+#   2. HAMMURABI_CONFIG_PATH env var
+#   3. ./hammurabi.toml (CWD)
+#   4. $HOME/.config/hammurabi/hammurabi.toml
+#
+# --config also accepts https:// URLs (1 MiB cap, 30 s total timeout).
+#
+# Every string-valued field supports `${VAR}` env interpolation anywhere in
+# the string. `$$` escapes a literal `$`. Unknown vars resolve to empty.
+# Secret-bearing fields also have a `*_file` sibling (github_token_file,
+# bot_token_file, github_app.private_key_file / private_key_path) that
+# reads the token from a file on disk — handy for K8s Secret mounts.
+# Precedence: *_file > inline string (after ${VAR}) > env fallback.
+#
+# Environment variables with HAMMURABI_ prefix override scalar settings
+# (e.g. HAMMURABI_POLL_INTERVAL=30). Mutable state lives under
+# HAMMURABI_DATA_DIR or --data-dir (default: ./.hammurabi).
 
 # GitHub repository to monitor (required)
 repo = "owner/repo"
@@ -38,8 +55,12 @@ approvers = ["your-github-username"]
 # the spec approval gate is skipped automatically.
 # bypass_label = "hammurabi-bypass"
 
-# GitHub authentication token (falls back to GITHUB_TOKEN env var)
-# github_token = "ghp_..."
+# GitHub authentication token (falls back to GITHUB_TOKEN env var).
+# Either supply inline, interpolate from env, or read from a file:
+#   github_token = "ghp_..."                             # literal
+#   github_token = "${GITHUB_TOKEN}"                     # env interpolation
+#   github_token_file = "/var/run/secrets/hammurabi/github_token"  # K8s Secret volume
+# github_token_file and github_token are mutually exclusive.
 
 # GitHub App authentication (alternative to github_token)
 # Acts as a bot with [bot] badge on PRs and comments.
@@ -48,6 +69,7 @@ approvers = ["your-github-username"]
 # [github_app]
 # app_id = 123456
 # private_key_path = "/path/to/your-app.private-key.pem"
+# # private_key_file is an accepted alias for private_key_path.
 # installation_id = 78901234
 
 # Per-task AI overrides (optional)
@@ -150,7 +172,9 @@ approvers = ["your-github-username"]
 # name = "hammurabi-intake"                 # label used in logs (optional)
 # channel_id = "1234567890"                 # Discord channel snowflake (as string)
 # repo = "owner/hammurabi"                  # must match a [[repos]] entry
+# # Either inline (with ${VAR} expansion) OR read from a file (exclusive):
 # bot_token = "${DISCORD_BOT_TOKEN}"        # env-expanded; never inline the token
+# # bot_token_file = "/var/run/secrets/hammurabi/discord_bot_token"
 # approvers = ["hydai"]                     # Discord usernames who may /confirm
 # agent_kind = "acp-claude"                 # optional per-source override
 # command_prefix = "/"                      # default "/"

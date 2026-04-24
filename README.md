@@ -26,8 +26,29 @@ Human approval is required at every stage. The daemon never merges a PR or auto-
 
 ## Install
 
+Three ways to run Hammurabi:
+
+**Native binary (from source):**
+
 ```bash
 cargo install --path .
+```
+
+**Docker** (pre-built images with bundled agent CLIs — see [Running in Docker](#running-in-docker)):
+
+```bash
+docker run --rm -v $(pwd)/hammurabi.toml:/etc/hammurabi/hammurabi.toml:ro \
+  -v hammurabi-data:/var/lib/hammurabi \
+  -e GITHUB_TOKEN=$GITHUB_TOKEN \
+  ghcr.io/hydai/hammurabi-claude:latest
+```
+
+**Kubernetes** (Helm chart or raw manifests — see [Running on Kubernetes](#running-on-kubernetes)):
+
+```bash
+helm install hammurabi oci://ghcr.io/hydai/charts/hammurabi \
+  --namespace hammurabi --create-namespace \
+  --values my-values.yaml
 ```
 
 ## Quick Start
@@ -102,7 +123,18 @@ When an issue number exists in multiple repos, `--repo` is required to disambigu
 
 ## Configuration
 
-Config is loaded from `./hammurabi.toml` or `~/.config/hammurabi/hammurabi.toml`, re-read each poll cycle for dynamic reload. Environment variables with `HAMMURABI_` prefix override any setting.
+Config path resolution (highest precedence first):
+
+1. `--config <path-or-url>` CLI flag. Accepts an `https://` URL as well as a local file path.
+2. `HAMMURABI_CONFIG_PATH` env var (same shape as the flag).
+3. `./hammurabi.toml` in the current working directory.
+4. `$HOME/.config/hammurabi/hammurabi.toml`.
+
+Config is re-read each poll cycle for dynamic reload. Environment variables with `HAMMURABI_` prefix override individual scalar settings (e.g. `HAMMURABI_POLL_INTERVAL=30`).
+
+Mutable state — SQLite database, git worktrees, the daemon lock file — lives under `--data-dir <path>` (or `HAMMURABI_DATA_DIR`). Default is `./.hammurabi`.
+
+Every string-valued setting supports `${VAR}` interpolation anywhere in the value. `$$` escapes a literal `$`. Unknown variables resolve to empty strings. Secret-bearing fields (`github_token`, `github_app.private_key_path`, Discord `bot_token`) also have `*_file` siblings that read from a file on disk — intended for K8s Secret volume mounts, but works anywhere.
 
 ### Global Parameters
 
@@ -241,6 +273,103 @@ For trusted issues, set `bypass_label` in config (e.g., `"hammurabi-bypass"`). W
 - Transient GitHub API errors are retried automatically with exponential backoff
 - The daemon reconciles state on restart
 - Config is re-read each poll cycle; invalid config is logged and the previous config is kept
+
+## Running in Docker
+
+Four image variants, one per supported `agent_kind`:
+
+| Image                          | Bundled agent CLI                              | Covers `agent_kind`               |
+| ------------------------------ | ---------------------------------------------- | --------------------------------- |
+| `ghcr.io/hydai/hammurabi-base`   | none (extend via `FROM`)                       | any, once you install an agent    |
+| `ghcr.io/hydai/hammurabi-claude` | `@anthropic-ai/claude-code` + `claude-agent-acp` | `claude_cli`, `acp_claude`        |
+| `ghcr.io/hydai/hammurabi-gemini` | `@google/gemini-cli`                           | `acp_gemini`                      |
+| `ghcr.io/hydai/hammurabi-codex`  | `@openai/codex` + `@zed-industries/codex-acp`  | `acp_codex`                       |
+
+Every image runs as UID 1000, uses `tini` as PID 1, expects the config at `/etc/hammurabi/hammurabi.toml`, and keeps state under `/var/lib/hammurabi`.
+
+### Quick start
+
+```bash
+docker run -d --name hammurabi \
+  -e GITHUB_TOKEN=ghp_xxxx \
+  -v $(pwd)/hammurabi.toml:/etc/hammurabi/hammurabi.toml:ro \
+  -v hammurabi-data:/var/lib/hammurabi \
+  ghcr.io/hydai/hammurabi-claude:latest
+
+docker exec hammurabi hammurabi status
+docker stop --time 30 hammurabi   # graceful SIGTERM drain
+```
+
+### Build from source
+
+```bash
+docker build -f deploy/docker/Dockerfile.claude -t hammurabi-claude:dev .
+```
+
+Per-variant build args pin agent CLI versions — see [`deploy/docker/README.md`](deploy/docker/README.md).
+
+### Extending the base image
+
+```dockerfile
+FROM ghcr.io/hydai/hammurabi-base:latest
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends my-agent-cli \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+USER 1000:1000
+```
+
+## Running on Kubernetes
+
+Hammurabi ships two installation paths. Both assume **one replica** (the PID lock file, SQLite DB, and RWO PVC enforce singleton semantics) with `strategy: Recreate` — rolling updates aren't possible.
+
+### Helm chart
+
+```bash
+helm install hammurabi oci://ghcr.io/hydai/charts/hammurabi \
+  --namespace hammurabi --create-namespace \
+  --set agent=acp_claude \
+  --set secrets.data.github_token=ghp_xxx
+```
+
+Values surface the `agent` toggle (drives image selection + `agent_kind` in the rendered TOML), persistence size, `config.raw` (literal TOML, Helm-templated) vs `config.url` (remote HTTPS), and secret injection (both envFrom and projected files). See [`deploy/helm/hammurabi/README.md`](deploy/helm/hammurabi/README.md) for the full value reference.
+
+### Raw manifests
+
+```bash
+# Edit deploy/k8s/configmap.yaml, secret.yaml, deployment.yaml image tag first.
+kubectl apply -k deploy/k8s/
+```
+
+### Security posture
+
+All variants default to: non-root (UID 1000), `readOnlyRootFilesystem: true`, `capabilities: drop: [ALL]`, `seccompProfile: RuntimeDefault`, no privilege escalation. The daemon only speaks outbound (GitHub, Discord, AI providers, ACP child stdios); no cluster-API access, no ServiceAccount, no Ingress.
+
+### Graceful shutdown
+
+The daemon installs SIGTERM/SIGINT handlers that:
+
+1. Stop the poll loop at the next cycle boundary.
+2. Fan SIGTERM out to every live ACP subprocess group (1.5 s follow-up SIGKILL).
+3. Release the PID lock file cleanly.
+
+The K8s default `terminationGracePeriodSeconds: 30` is enough for clean drain in typical cases. A second SIGTERM/SIGINT exits with 130 without waiting.
+
+## Container configuration
+
+| Knob                      | Purpose                                                                        |
+| ------------------------- | ------------------------------------------------------------------------------ |
+| `HAMMURABI_DATA_DIR`      | Mutable state location (SQLite, lock, worktrees). Set to the PVC mount.        |
+| `HAMMURABI_CONFIG_PATH`   | Alternative to `--config`; accepts a path or `https://` URL.                   |
+| `HAMMURABI_SECRETS_STRICT` | When `1`, rejects `*_file` paths containing `..` traversal. Off by default. |
+| `CLAUDE_CODE_EXECUTABLE`  | Claude variant only — points `claude-agent-acp` at the underlying CLI. Pre-set. |
+| `RUST_LOG`                | Standard tracing-subscriber filter. Default: `info`.                           |
+
+**Secrets** can be injected two ways, both simultaneously supported:
+
+- **Env var** (simple): reference inside the TOML via `github_token = "${GITHUB_TOKEN}"`.
+- **File mount** (preferred for K8s): reference via `github_token_file = "/var/run/secrets/hammurabi/github_token"`. Avoids tokens showing up in `/proc/<pid>/environ` on a compromised container.
+
+**Hooks** (`[hooks]`) run under `bash -c` and inherit the daemon's full environment. The image ships `bash`, `git`, `gh`, `ripgrep`, `curl`, and `ca-certificates`. Hooks see `GITHUB_TOKEN` and any Discord bot tokens — treat accordingly; don't shell out to untrusted scripts.
 
 ## License
 
