@@ -46,8 +46,8 @@ pub async fn execute(
         &model,
     )?;
 
-    // Remove seeded CLAUDE.md before reading spec output
-    let _ = tokio::fs::remove_file(lifecycle.worktree_path.join("CLAUDE.md")).await;
+    // Remove seeded instruction file before reading spec output
+    let _ = tokio::fs::remove_file(lifecycle.worktree_path.join(lifecycle.seed_filename)).await;
 
     // Read spec content from worktree (AI writes SPEC.md there)
     let spec_path = lifecycle.worktree_path.join("SPEC.md");

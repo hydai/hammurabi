@@ -6,13 +6,24 @@ pub mod spec_drafting;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::agents::{AgentRegistry, AiInvocation, AiResult};
+use crate::agents::{AgentKind, AgentRegistry, AiInvocation, AiResult};
 use crate::config::RepoConfig;
 use crate::db::Database;
 use crate::error::HammurabiError;
 use crate::github::GitHubClient;
 use crate::hooks;
 use crate::worktree::WorktreeManager;
+
+/// Convention for the per-agent instruction file seeded into the worktree
+/// before the AI runs. Each agent reads instructions from a different
+/// filename by convention.
+pub(crate) fn seed_filename(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::ClaudeCli | AgentKind::AcpClaude => "CLAUDE.md",
+        AgentKind::AcpGemini => "GEMINI.md",
+        AgentKind::AcpCodex => "AGENTS.md",
+    }
+}
 
 #[derive(Clone)]
 pub struct TransitionContext {
@@ -39,6 +50,10 @@ pub(crate) struct AiLifecycleResult {
     pub ai_result: AiResult,
     pub worktree_path: PathBuf,
     pub worktree_str: String,
+    /// The filename (relative to the worktree root) that was seeded with
+    /// the caller-provided instructions before the agent ran. Callers use
+    /// this to clean up after the agent finishes.
+    pub seed_filename: &'static str,
 }
 
 /// Run the standard AI lifecycle: create worktree, run hooks, seed CLAUDE.md,
@@ -68,8 +83,11 @@ pub(crate) async fn run_ai_lifecycle(
     )
     .await?;
 
-    let claude_md_content = if params.prepend_claude_md {
-        let existing = tokio::fs::read_to_string(worktree_path.join("CLAUDE.md"))
+    let agent_kind = ctx.config.agent_kind_for_task(&params.ai_task);
+    let seed_name = seed_filename(agent_kind);
+
+    let seed_content = if params.prepend_claude_md {
+        let existing = tokio::fs::read_to_string(worktree_path.join(seed_name))
             .await
             .unwrap_or_default();
         if existing.is_empty() {
@@ -81,7 +99,7 @@ pub(crate) async fn run_ai_lifecycle(
         params.claude_md
     };
     ctx.worktree
-        .seed_file(&worktree_path, "CLAUDE.md", &claude_md_content)
+        .seed_file(&worktree_path, seed_name, &seed_content)
         .await?;
 
     let model = ctx.config.ai_model_for_task(&params.ai_task).to_string();
@@ -96,7 +114,6 @@ pub(crate) async fn run_ai_lifecycle(
     )
     .await?;
 
-    let agent_kind = ctx.config.agent_kind_for_task(&params.ai_task);
     let agent = ctx.agents.get(agent_kind)?;
     let ai_result = agent
         .invoke(AiInvocation {
@@ -138,7 +155,30 @@ pub(crate) async fn run_ai_lifecycle(
         ai_result: result,
         worktree_path,
         worktree_str,
+        seed_filename: seed_name,
     })
+}
+
+#[cfg(test)]
+mod seed_filename_tests {
+    use super::seed_filename;
+    use crate::agents::AgentKind;
+
+    #[test]
+    fn claude_kinds_seed_claude_md() {
+        assert_eq!(seed_filename(AgentKind::ClaudeCli), "CLAUDE.md");
+        assert_eq!(seed_filename(AgentKind::AcpClaude), "CLAUDE.md");
+    }
+
+    #[test]
+    fn gemini_seeds_gemini_md() {
+        assert_eq!(seed_filename(AgentKind::AcpGemini), "GEMINI.md");
+    }
+
+    #[test]
+    fn codex_seeds_agents_md() {
+        assert_eq!(seed_filename(AgentKind::AcpCodex), "AGENTS.md");
+    }
 }
 
 #[cfg(test)]

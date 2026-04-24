@@ -77,21 +77,23 @@ pub async fn execute(
         &model,
     )?;
 
-    // Restore the original CLAUDE.md if the AI didn't modify it.
-    // The lifecycle seeded a temporary CLAUDE.md; if unchanged, restore the
-    // repo's version (or remove it) so `git add -A` doesn't stage the deletion.
-    let claude_md_path = worktree_path.join("CLAUDE.md");
-    let current_claude_md = tokio::fs::read_to_string(&claude_md_path).await.ok();
-    if current_claude_md.as_deref() == Some(claude_md.as_str()) {
-        // CLAUDE.md wasn't modified by AI — restore from git or remove
+    // Restore the original instruction file if the AI didn't modify it.
+    // The lifecycle seeded a temporary CLAUDE.md / GEMINI.md / AGENTS.md
+    // (depending on agent kind); if unchanged, restore the repo's version
+    // (or remove it) so `git add -A` doesn't stage the deletion.
+    let seed_name = lifecycle.seed_filename;
+    let seed_path = worktree_path.join(seed_name);
+    let current_seed = tokio::fs::read_to_string(&seed_path).await.ok();
+    if current_seed.as_deref() == Some(claude_md.as_str()) {
+        // Seed file wasn't modified by AI — restore from git or remove.
         let restore = tokio::process::Command::new("git")
-            .args(["checkout", "HEAD", "--", "CLAUDE.md"])
+            .args(["checkout", "HEAD", "--", seed_name])
             .current_dir(worktree_path)
             .output()
             .await;
         if restore.is_err() || !restore.unwrap().status.success() {
-            // No CLAUDE.md in the branch — just remove the seeded one
-            let _ = tokio::fs::remove_file(&claude_md_path).await;
+            // No such file in the branch — just remove the seeded one.
+            let _ = tokio::fs::remove_file(&seed_path).await;
         }
     }
 
