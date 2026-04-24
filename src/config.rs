@@ -487,11 +487,13 @@ pub async fn load(source: &ConfigSource) -> Result<Config, HammurabiError> {
 
 /// Load the resolved `Config`, optionally from an explicit path supplied by
 /// the caller (`hammurabi --config <path>`). Precedence for the source file:
+///
 /// 1. `explicit_path` (from CLI flag)
 /// 2. `HAMMURABI_CONFIG_PATH` env var (only interpreted as a path; URLs must
 ///    flow in through `ConfigSource::Url` because this entry point is sync)
 /// 3. `./hammurabi.toml` in CWD
 /// 4. `$HOME/.config/hammurabi/hammurabi.toml`
+///
 /// When none of the above is set or readable, an empty `RawConfig` is used
 /// so env-var-only operation (`HAMMURABI_*` overrides) still works.
 pub fn load_from(explicit_path: Option<&Path>) -> Result<Config, HammurabiError> {
@@ -1062,22 +1064,23 @@ fn expand_raw_config(raw: &mut RawConfig) {
         }
     }
     if let Some(agents) = raw.agents.as_mut() {
-        for maybe in [
+        for def in [
             &mut agents.acp_claude,
             &mut agents.acp_gemini,
             &mut agents.acp_codex,
-        ] {
-            if let Some(def) = maybe {
-                if let Some(s) = def.command.as_mut() {
-                    *s = expand_str(s);
-                }
-                if let Some(args) = def.args.as_mut() {
-                    for a in args {
-                        *a = expand_str(a);
-                    }
-                }
-                // def.env stays literal — see spawn.rs::expand_env_refs.
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(s) = def.command.as_mut() {
+                *s = expand_str(s);
             }
+            if let Some(args) = def.args.as_mut() {
+                for a in args {
+                    *a = expand_str(a);
+                }
+            }
+            // def.env stays literal — see spawn.rs::expand_env_refs.
         }
     }
 }
