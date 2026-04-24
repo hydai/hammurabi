@@ -186,6 +186,7 @@ pub(crate) mod test_helpers {
             review_max_iterations: 2,
             spec: None,
             implement: None,
+            agent_kind: crate::agents::AgentKind::ClaudeCli,
         }
     }
 }

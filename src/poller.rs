@@ -20,25 +20,25 @@ use crate::worktree::{
     AppTokenProvider, GitWorktreeManager, StaticTokenProvider, TokenProvider, WorktreeManager,
 };
 
-/// Build the global agent registry. Registers every supported agent kind
-/// with its default invocation; Phase 5 will let users override the ACP
-/// definitions via config.
-fn build_agent_registry() -> AgentRegistry {
+/// Build the global agent registry from the parsed config. Every supported
+/// agent kind is registered; ACP kinds use the `[agents.*]` overrides the
+/// user supplied (missing sections fall back to hard-coded defaults).
+fn build_agent_registry(config: &Config) -> AgentRegistry {
     let mut map: std::collections::HashMap<AgentKind, Arc<dyn AiAgent>> =
         std::collections::HashMap::new();
     map.insert(AgentKind::ClaudeCli, Arc::new(ClaudeCliAgent::new()));
-    map.insert(
+    for kind in [
         AgentKind::AcpClaude,
-        Arc::new(AcpAgent::with_defaults(AgentKind::AcpClaude)),
-    );
-    map.insert(
         AgentKind::AcpGemini,
-        Arc::new(AcpAgent::with_defaults(AgentKind::AcpGemini)),
-    );
-    map.insert(
         AgentKind::AcpCodex,
-        Arc::new(AcpAgent::with_defaults(AgentKind::AcpCodex)),
-    );
+    ] {
+        let def = config
+            .agents
+            .get(&kind)
+            .cloned()
+            .unwrap_or_else(|| crate::agents::acp::default_agent_def(kind));
+        map.insert(kind, Arc::new(AcpAgent::new(kind, def)));
+    }
     AgentRegistry::new(map)
 }
 
@@ -69,9 +69,9 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     // Build token provider (shared across all repos)
     let token_provider = build_token_provider(&config.github_auth)?;
 
-    // Initialize agent registry (shared, stateless).
-    // Phase 2 only registers the Claude CLI; Phase 4 adds ACP kinds.
-    let agents = Arc::new(build_agent_registry());
+    // Initialize agent registry (shared, stateless). ACP invocations pick
+    // up their config overrides from `config.agents`.
+    let agents = Arc::new(build_agent_registry(&config));
 
     // Initialize per-repo runtimes
     let repos_dir = base_dir.join("repos");

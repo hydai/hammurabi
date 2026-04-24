@@ -1,6 +1,10 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::acp::session::AcpAgentDef;
+use crate::agents::acp::default_agent_def;
+use crate::agents::AgentKind;
 use crate::error::HammurabiError;
 
 #[derive(Debug, Clone)]
@@ -27,6 +31,36 @@ pub struct AiTaskConfig {
     pub ai_effort: Option<String>,
     pub ai_timeout_secs: Option<u64>,
     pub ai_stall_timeout_secs: Option<u64>,
+    /// Override which agent implementation to use for this task.
+    pub agent_kind: Option<AgentKind>,
+}
+
+/// Raw `[agents.*]` section in the config TOML. Each field supplies an
+/// override for the subprocess invocation of one ACP agent kind; missing
+/// fields fall back to the hard-coded defaults in `default_agent_def`.
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawAcpAgentDef {
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    env: Option<HashMap<String, String>>,
+}
+
+impl RawAcpAgentDef {
+    fn resolve(self, kind: AgentKind) -> AcpAgentDef {
+        let defaults = default_agent_def(kind);
+        AcpAgentDef {
+            command: self.command.unwrap_or(defaults.command),
+            args: self.args.unwrap_or(defaults.args),
+            env: self.env.unwrap_or(defaults.env),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RawAgentsBlock {
+    acp_claude: Option<RawAcpAgentDef>,
+    acp_gemini: Option<RawAcpAgentDef>,
+    acp_codex: Option<RawAcpAgentDef>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -55,6 +89,8 @@ struct RawRepoEntry {
     review_max_iterations: Option<u32>,
     spec: Option<AiTaskConfig>,
     implement: Option<AiTaskConfig>,
+    /// Per-repo default agent kind. Overrides the global default.
+    agent_kind: Option<AgentKind>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -84,6 +120,11 @@ struct RawConfig {
     review_max_iterations: Option<u32>,
     spec: Option<AiTaskConfig>,
     implement: Option<AiTaskConfig>,
+    /// Global default agent kind. Applies to every repo that doesn't set
+    /// its own. Missing → `AgentKind::ClaudeCli`.
+    agent_kind: Option<AgentKind>,
+    /// `[agents.*]` subsections overriding the hard-coded ACP defaults.
+    agents: Option<RawAgentsBlock>,
 }
 
 /// Per-repo resolved configuration.
@@ -108,6 +149,9 @@ pub struct RepoConfig {
     pub review_max_iterations: u32,
     pub spec: Option<AiTaskConfig>,
     pub implement: Option<AiTaskConfig>,
+    /// Resolved per-repo default agent kind. Initialised at load time from
+    /// the per-repo override or the global default.
+    pub agent_kind: AgentKind,
 }
 
 impl RepoConfig {
@@ -150,10 +194,12 @@ impl RepoConfig {
             .unwrap_or(self.ai_stall_timeout_secs)
     }
 
-    /// Resolve the agent kind for a task. Phase 2 returns `ClaudeCli` for
-    /// every task; Phase 5 will consult per-task and per-repo overrides.
-    pub fn agent_kind_for_task(&self, _task: &str) -> crate::agents::AgentKind {
-        crate::agents::AgentKind::ClaudeCli
+    /// Resolve the agent kind for a task. Precedence:
+    /// per-task override > per-repo default > global default > `ClaudeCli`.
+    pub fn agent_kind_for_task(&self, task: &str) -> AgentKind {
+        self.task_config(task)
+            .and_then(|c| c.agent_kind)
+            .unwrap_or(self.agent_kind)
     }
 
     /// Create a RepoConfig for a CLI-provided repo, using an existing config as
@@ -185,6 +231,7 @@ impl RepoConfig {
                 review_max_iterations: b.review_max_iterations,
                 spec: b.spec.clone(),
                 implement: b.implement.clone(),
+                agent_kind: b.agent_kind,
             })
         } else {
             Err(HammurabiError::Config(
@@ -201,6 +248,36 @@ pub struct Config {
     pub api_retry_count: u32,
     pub github_auth: GitHubAuth,
     pub repos: Vec<RepoConfig>,
+    /// Resolved subprocess definitions for each ACP kind. Built from
+    /// hard-coded defaults, overridden by any `[agents.*]` sections in the
+    /// config TOML.
+    pub agents: HashMap<AgentKind, AcpAgentDef>,
+}
+
+/// Build the ACP agent definition map from an optional `[agents]` block in
+/// the raw config, falling back to hard-coded defaults for missing kinds.
+fn resolve_agent_defs(raw: Option<RawAgentsBlock>) -> HashMap<AgentKind, AcpAgentDef> {
+    let raw = raw.unwrap_or_default();
+    let mut out = HashMap::new();
+    out.insert(
+        AgentKind::AcpClaude,
+        raw.acp_claude
+            .unwrap_or_default()
+            .resolve(AgentKind::AcpClaude),
+    );
+    out.insert(
+        AgentKind::AcpGemini,
+        raw.acp_gemini
+            .unwrap_or_default()
+            .resolve(AgentKind::AcpGemini),
+    );
+    out.insert(
+        AgentKind::AcpCodex,
+        raw.acp_codex
+            .unwrap_or_default()
+            .resolve(AgentKind::AcpCodex),
+    );
+    out
 }
 
 impl Config {
@@ -312,6 +389,8 @@ pub fn load() -> Result<Config, HammurabiError> {
             review_max_iterations: None,
             spec: None,
             implement: None,
+            agent_kind: None,
+            agents: None,
         }
     };
 
@@ -361,6 +440,8 @@ pub fn load() -> Result<Config, HammurabiError> {
     }
     let global_spec = raw.spec;
     let global_implement = raw.implement;
+    let global_agent_kind = raw.agent_kind.unwrap_or(AgentKind::ClaudeCli);
+    let agents = resolve_agent_defs(raw.agents);
 
     let bypass_label = raw
         .bypass_label
@@ -450,24 +531,12 @@ pub fn load() -> Result<Config, HammurabiError> {
         // Backward compat: single repo field → single-element array
         vec![RawRepoEntry {
             repo: Some(legacy_repo),
-            tracking_label: None,
             approvers: if global_approvers.is_empty() {
                 None
             } else {
                 Some(global_approvers.clone())
             },
-            ai_model: None,
-            ai_max_turns: None,
-            ai_effort: None,
-            ai_timeout_secs: None,
-            ai_stall_timeout_secs: None,
-            ai_max_retries: None,
-            max_concurrent_agents: None,
-            hooks: None,
-            review: None,
-            review_max_iterations: None,
-            spec: None,
-            implement: None,
+            ..Default::default()
         }]
     } else {
         return Err(HammurabiError::Config(
@@ -567,6 +636,7 @@ pub fn load() -> Result<Config, HammurabiError> {
                 .max(1),
             spec: entry.spec.clone().or_else(|| global_spec.clone()),
             implement: entry.implement.clone().or_else(|| global_implement.clone()),
+            agent_kind: entry.agent_kind.unwrap_or(global_agent_kind),
         });
     }
 
@@ -575,6 +645,7 @@ pub fn load() -> Result<Config, HammurabiError> {
         api_retry_count,
         github_auth,
         repos: repo_configs,
+        agents,
     })
 }
 
@@ -606,6 +677,8 @@ mod tests {
         let global_review_max_iterations = raw.review_max_iterations.unwrap_or(2);
         let global_spec = raw.spec;
         let global_implement = raw.implement;
+        let global_agent_kind = raw.agent_kind.unwrap_or(AgentKind::ClaudeCli);
+        let agents = resolve_agent_defs(raw.agents);
 
         let legacy_repo = raw.repo.unwrap_or_default();
 
@@ -700,6 +773,7 @@ mod tests {
                     .max(1),
                 spec: entry.spec.clone().or_else(|| global_spec.clone()),
                 implement: entry.implement.clone().or_else(|| global_implement.clone()),
+                agent_kind: entry.agent_kind.unwrap_or(global_agent_kind),
             });
         }
 
@@ -708,6 +782,7 @@ mod tests {
             api_retry_count: raw.api_retry_count.unwrap_or(3),
             github_auth,
             repos: repo_configs,
+            agents,
         })
     }
 
@@ -731,6 +806,119 @@ mod tests {
         assert_eq!(rc.stale_timeout_days, 7);
         assert_eq!(config.api_retry_count, 3);
         assert_eq!(rc.ai_max_turns, 50);
+    }
+
+    #[test]
+    fn test_agent_kind_defaults_to_claude_cli() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "m"
+            approvers = ["alice"]
+        "#;
+        let config = parse_raw(toml).unwrap();
+        let rc = config.first_repo();
+        assert_eq!(rc.agent_kind, AgentKind::ClaudeCli);
+        assert_eq!(rc.agent_kind_for_task("spec"), AgentKind::ClaudeCli);
+    }
+
+    #[test]
+    fn test_global_agent_kind_applies_to_repo() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "m"
+            approvers = ["alice"]
+            agent_kind = "acp-claude"
+        "#;
+        let config = parse_raw(toml).unwrap();
+        let rc = config.first_repo();
+        assert_eq!(rc.agent_kind, AgentKind::AcpClaude);
+        assert_eq!(rc.agent_kind_for_task("spec"), AgentKind::AcpClaude);
+    }
+
+    #[test]
+    fn test_per_repo_agent_kind_overrides_global() {
+        let toml = r#"
+            ai_model = "m"
+            approvers = ["alice"]
+            agent_kind = "acp-claude"
+
+            [[repos]]
+            repo = "owner/a"
+
+            [[repos]]
+            repo = "owner/b"
+            agent_kind = "acp-gemini"
+        "#;
+        let config = parse_raw(toml).unwrap();
+        assert_eq!(config.repos[0].agent_kind, AgentKind::AcpClaude);
+        assert_eq!(config.repos[1].agent_kind, AgentKind::AcpGemini);
+    }
+
+    #[test]
+    fn test_per_task_agent_kind_overrides_repo() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "m"
+            approvers = ["alice"]
+            agent_kind = "acp-claude"
+
+            [spec]
+            agent_kind = "acp-gemini"
+
+            [implement]
+            agent_kind = "acp-codex"
+        "#;
+        let config = parse_raw(toml).unwrap();
+        let rc = config.first_repo();
+        assert_eq!(rc.agent_kind, AgentKind::AcpClaude);
+        assert_eq!(rc.agent_kind_for_task("spec"), AgentKind::AcpGemini);
+        assert_eq!(rc.agent_kind_for_task("implement"), AgentKind::AcpCodex);
+        assert_eq!(rc.agent_kind_for_task("review"), AgentKind::AcpClaude);
+    }
+
+    #[test]
+    fn test_agents_block_overrides_defaults() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "m"
+            approvers = ["alice"]
+
+            [agents.acp_gemini]
+            command = "/opt/custom/gemini-wrapper"
+            args = ["--acp", "--verbose"]
+        "#;
+        let config = parse_raw(toml).unwrap();
+        let gemini = config.agents.get(&AgentKind::AcpGemini).unwrap();
+        assert_eq!(gemini.command, "/opt/custom/gemini-wrapper");
+        assert_eq!(
+            gemini.args,
+            vec!["--acp".to_string(), "--verbose".to_string()]
+        );
+        // Other kinds still get their defaults.
+        let claude = config.agents.get(&AgentKind::AcpClaude).unwrap();
+        assert_eq!(claude.command, "claude-agent-acp");
+    }
+
+    #[test]
+    fn test_missing_agents_block_uses_all_defaults() {
+        let toml = r#"
+            repo = "owner/repo"
+            ai_model = "m"
+            approvers = ["alice"]
+        "#;
+        let config = parse_raw(toml).unwrap();
+        assert_eq!(
+            config.agents.get(&AgentKind::AcpClaude).unwrap().command,
+            "claude-agent-acp"
+        );
+        assert_eq!(
+            config.agents.get(&AgentKind::AcpGemini).unwrap().command,
+            "gemini"
+        );
+        assert_eq!(
+            config.agents.get(&AgentKind::AcpCodex).unwrap().command,
+            "codex-acp"
+        );
     }
 
     #[test]

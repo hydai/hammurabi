@@ -56,12 +56,6 @@ impl AcpAgent {
         Self { kind, def }
     }
 
-    /// Construct with the hardcoded default subprocess for the kind. Used by
-    /// the Phase 4 poller until Phase 5 lands per-agent config.
-    pub fn with_defaults(kind: AgentKind) -> Self {
-        Self::new(kind, default_agent_def(kind))
-    }
-
     /// Expose the underlying command for logs / error messages.
     #[allow(dead_code)]
     pub fn command(&self) -> &str {

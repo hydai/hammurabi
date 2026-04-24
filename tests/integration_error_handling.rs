@@ -61,6 +61,7 @@ fn test_config() -> RepoConfig {
         review_max_iterations: 2,
         spec: None,
         implement: None,
+        agent_kind: AgentKind::ClaudeCli,
     }
 }
 
