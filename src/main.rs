@@ -23,16 +23,19 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
+use crate::config::ConfigSource;
 use crate::db::Database;
 use crate::models::IssueState;
 
 #[derive(Parser)]
 #[command(name = "hammurabi", about = "AI-powered GitHub issue lifecycle daemon")]
 struct Cli {
-    /// Path to hammurabi.toml. Overrides autodetect (./hammurabi.toml,
-    /// then $HOME/.config/hammurabi/hammurabi.toml) and HAMMURABI_CONFIG_PATH.
-    #[arg(long, global = true, value_name = "PATH")]
-    config: Option<PathBuf>,
+    /// Path OR `https://` URL to hammurabi.toml. Overrides autodetect
+    /// (./hammurabi.toml, then $HOME/.config/hammurabi/hammurabi.toml) and
+    /// HAMMURABI_CONFIG_PATH. Remote configs are capped at 1 MiB with a
+    /// 30 s total timeout.
+    #[arg(long, global = true, value_name = "PATH_OR_URL")]
+    config: Option<String>,
 
     /// Directory for mutable state (SQLite DB, bare clones, worktrees, PID lock).
     /// Overrides HAMMURABI_DATA_DIR. Default: ./.hammurabi.
@@ -86,17 +89,17 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let data_dir = resolve_data_dir(cli.data_dir.clone());
-    let config_path = resolve_config_path(cli.config.clone());
+    let config_source = resolve_config_source(cli.config.clone());
 
     match cli.command {
         Commands::Watch { repo } => {
-            // Set HAMMURABI_REPO before config::load_from() so the loader can use
+            // Set HAMMURABI_REPO before config::load() so the loader can use
             // it as the legacy repo when no repo/[[repos]] is in the config file.
             if let Some(ref r) = repo {
                 std::env::set_var("HAMMURABI_REPO", r);
             }
 
-            let mut config = config::load_from(config_path.as_deref())?;
+            let mut config = config::load(&config_source).await?;
 
             // If CLI repo was given and config has [[repos]], override the list
             if let Some(ref r) = repo {
@@ -118,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
                 "Monitoring repositories"
             );
 
-            poller::run_daemon(config, data_dir, config_path).await?;
+            poller::run_daemon(config, data_dir, config_source).await?;
         }
         Commands::Status { repo } => {
             let db = open_db(&data_dir)?;
@@ -264,8 +267,16 @@ fn resolve_data_dir(cli_override: Option<PathBuf>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".hammurabi"))
 }
 
-fn resolve_config_path(cli_override: Option<PathBuf>) -> Option<PathBuf> {
-    cli_override.or_else(|| std::env::var_os("HAMMURABI_CONFIG_PATH").map(PathBuf::from))
+fn resolve_config_source(cli_override: Option<String>) -> ConfigSource {
+    if let Some(raw) = cli_override {
+        return ConfigSource::from_raw(&raw);
+    }
+    if let Ok(raw) = std::env::var("HAMMURABI_CONFIG_PATH") {
+        if !raw.is_empty() {
+            return ConfigSource::from_raw(&raw);
+        }
+    }
+    ConfigSource::Path(None)
 }
 
 fn open_db(data_dir: &Path) -> Result<Database, anyhow::Error> {

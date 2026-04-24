@@ -9,7 +9,7 @@ use crate::access::AllowUsers;
 use crate::agents::acp::AcpAgent;
 use crate::agents::{AgentKind, AgentRegistry, AiAgent, ClaudeCliAgent};
 use crate::approval::{self, CommentApprovalResult, DiscordApprovalResult, PrApprovalResult};
-use crate::config::{self, DiscordChannelConfig, GitHubAuth, SourceEntry};
+use crate::config::{self, ConfigSource, DiscordChannelConfig, GitHubAuth, SourceEntry};
 use crate::config::{Config, RepoConfig};
 use crate::db::Database;
 use crate::discord::DiscordClient;
@@ -110,7 +110,7 @@ async fn seed_discord_cursor(client: &dyn DiscordClient, channel_id: u64) -> Opt
 pub async fn run_daemon(
     config: Config,
     data_dir: PathBuf,
-    config_path: Option<PathBuf>,
+    config_source: ConfigSource,
 ) -> Result<(), HammurabiError> {
     let base_dir = data_dir;
     tokio::fs::create_dir_all(&base_dir)
@@ -249,7 +249,7 @@ pub async fn run_daemon(
     // Main poll loop
     loop {
         // Dynamic config reload: re-read config each cycle
-        match config::load_from(config_path.as_deref()) {
+        match config::load(&config_source).await {
             Ok(new_config) => {
                 current_config = new_config;
             }

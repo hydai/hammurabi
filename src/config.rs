@@ -442,56 +442,167 @@ fn parse_owner_repo(repo: &str) -> Result<(String, String), HammurabiError> {
     Ok((owner.to_string(), repo_name.to_string()))
 }
 
+/// Where to read the Hammurabi config from.
+#[derive(Debug, Clone)]
+pub enum ConfigSource {
+    /// Explicit local path, or `None` to fall through to `HAMMURABI_CONFIG_PATH`
+    /// then autodetect (`./hammurabi.toml`, `$HOME/.config/hammurabi/hammurabi.toml`).
+    Path(Option<PathBuf>),
+    /// Remote HTTPS URL.
+    Url(String),
+}
+
+impl ConfigSource {
+    /// Parse a raw string from `--config` / `HAMMURABI_CONFIG_PATH`. Strings
+    /// beginning with `https://` (or `http://`, which is rejected downstream)
+    /// become `Url`; everything else is treated as a filesystem path.
+    pub fn from_raw(raw: &str) -> Self {
+        if raw.starts_with("https://") || raw.starts_with("http://") {
+            ConfigSource::Url(raw.to_string())
+        } else {
+            ConfigSource::Path(Some(PathBuf::from(raw)))
+        }
+    }
+}
+
+/// Load the resolved `Config` from the given source.
+pub async fn load(source: &ConfigSource) -> Result<Config, HammurabiError> {
+    match source {
+        ConfigSource::Path(p) => load_from(p.as_deref()),
+        ConfigSource::Url(u) => load_from_url(u).await,
+    }
+}
+
 /// Load the resolved `Config`, optionally from an explicit path supplied by
 /// the caller (`hammurabi --config <path>`). Precedence for the source file:
 /// 1. `explicit_path` (from CLI flag)
-/// 2. `HAMMURABI_CONFIG_PATH` env var
+/// 2. `HAMMURABI_CONFIG_PATH` env var (only interpreted as a path; URLs must
+///    flow in through `ConfigSource::Url` because this entry point is sync)
 /// 3. `./hammurabi.toml` in CWD
 /// 4. `$HOME/.config/hammurabi/hammurabi.toml`
 /// When none of the above is set or readable, an empty `RawConfig` is used
 /// so env-var-only operation (`HAMMURABI_*` overrides) still works.
 pub fn load_from(explicit_path: Option<&Path>) -> Result<Config, HammurabiError> {
+    build_config(read_raw_from_path(explicit_path)?)
+}
+
+/// Fetch a remote `hammurabi.toml` over HTTPS and build a resolved `Config`.
+/// Enforces `https://` only, a 10 s connect / 30 s total timeout, and a
+/// 1 MiB body cap. The downloaded body goes through the same parser and
+/// validation pipeline as a local config file.
+pub async fn load_from_url(url: &str) -> Result<Config, HammurabiError> {
+    let body = fetch_remote_config(url).await?;
+    let raw: RawConfig = toml::from_str(&body).map_err(|e| {
+        HammurabiError::Config(format!("failed to parse remote config ({}): {}", url, e))
+    })?;
+    build_config(raw)
+}
+
+/// Resolve a source file path with the documented precedence, then read and
+/// parse it. When no path is resolved, returns an empty `RawConfig` so the
+/// downstream validation runs purely on env-var overrides and defaults.
+fn read_raw_from_path(explicit_path: Option<&Path>) -> Result<RawConfig, HammurabiError> {
     let resolved_path: Option<PathBuf> = explicit_path
         .map(|p| p.to_path_buf())
         .or_else(|| std::env::var_os("HAMMURABI_CONFIG_PATH").map(PathBuf::from))
         .or_else(find_config_file);
 
-    let raw: RawConfig = if let Some(path) = resolved_path {
+    if let Some(path) = resolved_path {
         let content = std::fs::read_to_string(&path).map_err(|e| {
             HammurabiError::Config(format!("failed to read {}: {}", path.display(), e))
         })?;
         toml::from_str(&content)
-            .map_err(|e| HammurabiError::Config(format!("failed to parse config: {}", e)))?
+            .map_err(|e| HammurabiError::Config(format!("failed to parse config: {}", e)))
     } else {
-        RawConfig {
-            repo: None,
-            repos: None,
-            sources: None,
-            poll_interval: None,
-            tracking_label: None,
-            stale_timeout_days: None,
-            api_retry_count: None,
-            ai_model: None,
-            ai_max_turns: None,
-            ai_effort: None,
-            ai_timeout_secs: None,
-            ai_stall_timeout_secs: None,
-            ai_max_retries: None,
-            max_concurrent_agents: None,
-            approvers: None,
-            github_token: None,
-            github_app: None,
-            bypass_label: None,
-            hooks: None,
-            review: None,
-            review_max_iterations: None,
-            spec: None,
-            implement: None,
-            agent_kind: None,
-            agents: None,
-        }
-    };
+        Ok(empty_raw_config())
+    }
+}
 
+fn empty_raw_config() -> RawConfig {
+    RawConfig {
+        repo: None,
+        repos: None,
+        sources: None,
+        poll_interval: None,
+        tracking_label: None,
+        stale_timeout_days: None,
+        api_retry_count: None,
+        ai_model: None,
+        ai_max_turns: None,
+        ai_effort: None,
+        ai_timeout_secs: None,
+        ai_stall_timeout_secs: None,
+        ai_max_retries: None,
+        max_concurrent_agents: None,
+        approvers: None,
+        github_token: None,
+        github_app: None,
+        bypass_label: None,
+        hooks: None,
+        review: None,
+        review_max_iterations: None,
+        spec: None,
+        implement: None,
+        agent_kind: None,
+        agents: None,
+    }
+}
+
+/// Download the body at `url` with tight timeouts and a 1 MiB cap. HTTPS-only
+/// to keep the token interpolation pipeline from pulling secret-bearing TOML
+/// over cleartext HTTP.
+async fn fetch_remote_config(url: &str) -> Result<String, HammurabiError> {
+    if !url.starts_with("https://") {
+        return Err(HammurabiError::Config(format!(
+            "remote config must use https:// (got {})",
+            url
+        )));
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| HammurabiError::Config(format!("failed to build HTTP client: {}", e)))?;
+
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| HammurabiError::Config(format!("failed to fetch {}: {}", url, e)))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(HammurabiError::Config(format!(
+            "fetching {} returned HTTP {}",
+            url, status
+        )));
+    }
+
+    // Stream chunks with a running size cap so a hostile or misconfigured
+    // server cannot OOM us with an unbounded body.
+    const MAX_BYTES: usize = 1024 * 1024;
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| HammurabiError::Config(format!("failed to read {}: {}", url, e)))?
+    {
+        if buf.len() + chunk.len() > MAX_BYTES {
+            return Err(HammurabiError::Config(format!(
+                "remote config exceeds 1 MiB cap ({})",
+                url
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    String::from_utf8(buf).map_err(|e| {
+        HammurabiError::Config(format!("remote config is not valid UTF-8 ({}): {}", url, e))
+    })
+}
+
+fn build_config(raw: RawConfig) -> Result<Config, HammurabiError> {
     // --- Global defaults ---
     let mut poll_interval = raw.poll_interval.unwrap_or(60);
     env_override("poll_interval", &mut poll_interval);
@@ -839,6 +950,41 @@ fn expand_env(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_source_from_raw_detects_scheme() {
+        match ConfigSource::from_raw("https://example.com/hammurabi.toml") {
+            ConfigSource::Url(u) => assert_eq!(u, "https://example.com/hammurabi.toml"),
+            _ => panic!("expected Url variant"),
+        }
+        match ConfigSource::from_raw("http://insecure.example/hammurabi.toml") {
+            ConfigSource::Url(u) => assert_eq!(u, "http://insecure.example/hammurabi.toml"),
+            _ => panic!("expected Url variant (scheme rejected at fetch time)"),
+        }
+        match ConfigSource::from_raw("/etc/hammurabi/hammurabi.toml") {
+            ConfigSource::Path(Some(p)) => {
+                assert_eq!(p, PathBuf::from("/etc/hammurabi/hammurabi.toml"))
+            }
+            _ => panic!("expected Path variant"),
+        }
+        match ConfigSource::from_raw("hammurabi.toml") {
+            ConfigSource::Path(Some(p)) => assert_eq!(p, PathBuf::from("hammurabi.toml")),
+            _ => panic!("expected Path variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_remote_config_rejects_http() {
+        let err = fetch_remote_config("http://example.com/hammurabi.toml")
+            .await
+            .expect_err("http:// must be rejected");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("https://"),
+            "error should mention https:// requirement, got: {}",
+            msg
+        );
+    }
 
     fn parse_raw(toml_str: &str) -> Result<Config, HammurabiError> {
         let raw: RawConfig =
