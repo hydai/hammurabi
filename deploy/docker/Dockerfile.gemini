@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1.7
+# Hammurabi + Google Gemini CLI (ACP mode).
+# Serves agent_kind = "acp_gemini".
+
+ARG RUST_VERSION=1
+ARG DEBIAN_CODENAME=bookworm
+ARG NODE_MAJOR=22
+ARG GEMINI_CLI_VERSION=latest
+
+# ---- builder (identical across variants; BuildKit shares the layers) ----------
+FROM rust:${RUST_VERSION}-${DEBIAN_CODENAME} AS builder
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src tests/support/fake_acp_agent \
+ && echo "fn main() {}" > src/main.rs \
+ && echo "fn main() {}" > tests/support/fake_acp_agent/main.rs \
+ && cargo build --release --locked --bin hammurabi \
+ && rm -rf src tests target/release/deps/hammurabi-*
+COPY src ./src
+COPY tests ./tests
+RUN cargo build --release --locked --bin hammurabi
+
+# ---- runtime -----------------------------------------------------------------
+FROM node:${NODE_MAJOR}-${DEBIAN_CODENAME}-slim AS runtime
+
+ARG TARGETARCH
+ARG GEMINI_CLI_VERSION
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl git gnupg procps ripgrep tini \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=${TARGETARCH:-$(dpkg --print-architecture)} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Gemini's ACP mode is invoked by `gemini --acp`; see src/agents/acp.rs::default_agent_def.
+RUN npm install -g "@google/gemini-cli@${GEMINI_CLI_VERSION}"
+
+RUN mkdir -p /var/lib/hammurabi /etc/hammurabi \
+ && chown -R 1000:1000 /var/lib/hammurabi /etc/hammurabi
+
+COPY --from=builder --chown=1000:1000 /src/target/release/hammurabi /usr/local/bin/hammurabi
+
+USER 1000:1000
+WORKDIR /var/lib/hammurabi
+
+ENV HAMMURABI_DATA_DIR=/var/lib/hammurabi \
+    HAMMURABI_CONFIG_PATH=/etc/hammurabi/hammurabi.toml \
+    RUST_LOG=info
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD pgrep -x hammurabi > /dev/null || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hammurabi"]
+CMD ["watch"]

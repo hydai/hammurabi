@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1.7
+# Hammurabi + Claude CLI + claude-agent-acp.
+#
+# Serves both agent_kind = "claude_cli" and agent_kind = "acp_claude"
+# because both dispatch modes resolve the same `claude` binary on PATH;
+# the ACP wrapper adds a tiny JSON-RPC shim on top.
+
+ARG RUST_VERSION=1
+ARG DEBIAN_CODENAME=bookworm
+ARG NODE_MAJOR=22
+# Pin agent versions here so image tags are reproducible. Bump via PR.
+ARG CLAUDE_CODE_VERSION=latest
+ARG CLAUDE_AGENT_ACP_VERSION=latest
+
+# ---- builder (identical across variants; BuildKit shares the layers) ----------
+FROM rust:${RUST_VERSION}-${DEBIAN_CODENAME} AS builder
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src tests/support/fake_acp_agent \
+ && echo "fn main() {}" > src/main.rs \
+ && echo "fn main() {}" > tests/support/fake_acp_agent/main.rs \
+ && cargo build --release --locked --bin hammurabi \
+ && rm -rf src tests target/release/deps/hammurabi-*
+COPY src ./src
+COPY tests ./tests
+RUN cargo build --release --locked --bin hammurabi
+
+# ---- runtime -----------------------------------------------------------------
+FROM node:${NODE_MAJOR}-${DEBIAN_CODENAME}-slim AS runtime
+
+ARG TARGETARCH
+ARG CLAUDE_CODE_VERSION
+ARG CLAUDE_AGENT_ACP_VERSION
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl git gnupg procps ripgrep tini \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=${TARGETARCH:-$(dpkg --print-architecture)} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Claude CLI + ACP wrapper. Installing both lets the image cover both
+# agent_kind = "claude_cli" (plain stream-json output) and
+# agent_kind = "acp_claude" (JSON-RPC over stdio via claude-agent-acp).
+RUN npm install -g \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+        "claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION}"
+
+# The ACP wrapper resolves the underlying CLI via this env var. Without
+# it, claude-agent-acp silently falls back to its bundled cli.js even
+# when @anthropic-ai/claude-code is installed. Load-bearing; don't drop.
+ENV CLAUDE_CODE_EXECUTABLE=/usr/local/bin/claude
+
+# node:22-bookworm-slim ships a `node` user at UID 1000 / GID 1000 out of
+# the box, which is exactly the UID/GID we target for K8s fsGroup. Reuse
+# it rather than create a second "hammurabi" account.
+RUN mkdir -p /var/lib/hammurabi /etc/hammurabi \
+ && chown -R 1000:1000 /var/lib/hammurabi /etc/hammurabi
+
+COPY --from=builder --chown=1000:1000 /src/target/release/hammurabi /usr/local/bin/hammurabi
+
+USER 1000:1000
+WORKDIR /var/lib/hammurabi
+
+ENV HAMMURABI_DATA_DIR=/var/lib/hammurabi \
+    HAMMURABI_CONFIG_PATH=/etc/hammurabi/hammurabi.toml \
+    RUST_LOG=info
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD pgrep -x hammurabi > /dev/null || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hammurabi"]
+CMD ["watch"]

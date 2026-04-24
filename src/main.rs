@@ -29,7 +29,11 @@ use crate::db::Database;
 use crate::models::IssueState;
 
 #[derive(Parser)]
-#[command(name = "hammurabi", about = "AI-powered GitHub issue lifecycle daemon")]
+#[command(
+    name = "hammurabi",
+    version = env!("CARGO_PKG_VERSION"),
+    about = "AI-powered GitHub issue lifecycle daemon"
+)]
 struct Cli {
     /// Path OR `https://` URL to hammurabi.toml. Overrides autodetect
     /// (./hammurabi.toml, then $HOME/.config/hammurabi/hammurabi.toml) and

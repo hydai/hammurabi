@@ -1,0 +1,91 @@
+# syntax=docker/dockerfile:1.7
+# Base Hammurabi image — no AI agent CLI pre-installed. Intended for
+# operators who want to bring their own agent (via `FROM hammurabi-base`
+# + their own install step), or who run the daemon in a mode where it
+# never invokes an agent (e.g. only polls GitHub for bypassed work).
+#
+# The builder stage is duplicated across all variant Dockerfiles verbatim
+# so BuildKit can share layer caches when the same commit is built for
+# multiple variants in parallel.
+
+ARG RUST_VERSION=1
+ARG DEBIAN_CODENAME=bookworm
+
+# ---- builder -----------------------------------------------------------------
+FROM rust:${RUST_VERSION}-${DEBIAN_CODENAME} AS builder
+WORKDIR /src
+
+# Dep-only warm-up: build against stubbed sources so iterating on src/
+# doesn't re-download and rebuild the ~400 crates in our tree every time.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src tests/support/fake_acp_agent \
+ && echo "fn main() {}" > src/main.rs \
+ && echo "fn main() {}" > tests/support/fake_acp_agent/main.rs \
+ && cargo build --release --locked --bin hammurabi \
+ && rm -rf src tests target/release/deps/hammurabi-*
+
+# Real sources. tests/ is copied because Cargo.toml has a [[bin]] target
+# (fake-acp-agent) rooted there; the file must exist during build even
+# when we only compile --bin hammurabi.
+COPY src ./src
+COPY tests ./tests
+RUN cargo build --release --locked --bin hammurabi
+
+# ---- runtime -----------------------------------------------------------------
+FROM debian:${DEBIAN_CODENAME}-slim AS runtime
+
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Common runtime tooling:
+# - bash: lifecycle hooks invoke `sh -c`, and many hook scripts drift into
+#   bashisms (readarray, [[ … ]]) over time; ship bash rather than surprise
+#   operators with a minimal dash.
+# - git, gh: git worktree ops + optional `gh` use from user hooks.
+# - tini: PID 1 that reaps zombies from the ACP subprocess trees.
+# - procps: provides `pgrep`, used by HEALTHCHECK.
+# - ripgrep: commonly used inside hooks and by some agent CLIs.
+# - ca-certificates + curl: outbound HTTPS to GitHub, Discord, AI providers.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        gnupg \
+        procps \
+        ripgrep \
+        tini \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=${TARGETARCH:-$(dpkg --print-architecture)} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Stable UID/GID so K8s `fsGroup: 1000` works without surprises.
+RUN groupadd --gid 1000 hammurabi \
+ && useradd --uid 1000 --gid 1000 --home-dir /var/lib/hammurabi --shell /bin/bash hammurabi \
+ && mkdir -p /var/lib/hammurabi /etc/hammurabi \
+ && chown -R 1000:1000 /var/lib/hammurabi /etc/hammurabi
+
+COPY --from=builder --chown=1000:1000 /src/target/release/hammurabi /usr/local/bin/hammurabi
+
+USER 1000:1000
+WORKDIR /var/lib/hammurabi
+
+ENV HAMMURABI_DATA_DIR=/var/lib/hammurabi \
+    HAMMURABI_CONFIG_PATH=/etc/hammurabi/hammurabi.toml \
+    RUST_LOG=info
+
+# `pgrep -x` matches the exact basename; the binary is installed as
+# /usr/local/bin/hammurabi so `pgrep -x hammurabi` wakes up the right
+# signal. K8s can layer a `livenessProbe` on top if operators want.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD pgrep -x hammurabi > /dev/null || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hammurabi"]
+CMD ["watch"]

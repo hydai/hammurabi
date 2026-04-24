@@ -1,0 +1,15 @@
+target/
+.hammurabi/
+.git/
+.github/
+.claude/
+.spectra.yaml
+openspec/
+docs/
+*.md
+!README.md
+!CLAUDE.md
+.DS_Store
+tmp*
+deploy/helm/
+deploy/k8s/
