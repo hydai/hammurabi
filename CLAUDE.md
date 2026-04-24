@@ -1,116 +1,94 @@
 # Hammurabi
 
-## Project Overview
+Guidance for AI assistants working on this repository. End-user
+documentation lives in `README.md`, `install.md`, and
+`getting-started.md`. Contributor-facing architecture notes and the
+full module layout are in `docs/architecture.md`.
 
-Hammurabi is a Rust CLI daemon that monitors one or more GitHub repositories' issue boards and orchestrates an AI agent to automate the issue lifecycle (spec drafting → approval → implementation) with mandatory human approval at every step. The default agent is the Claude CLI; `agent_kind = "acp-claude" | "acp-gemini" | "acp-codex"` opts a repo or individual task into an Agent Client Protocol subprocess instead.
+## Project overview
 
-In addition to GitHub label polling, Hammurabi can accept ideas from chat intake sources — today Discord, designed so additional platforms slot in behind the same `DiscordClient` / `Publisher` shape. A Discord-originated intake creates a thread, drafts the spec interactively, and opens a GitHub issue on `/confirm`; the existing implementation/review/PR pipeline then runs unchanged.
+Hammurabi is a Rust CLI daemon that monitors one or more GitHub
+repositories' issue boards and orchestrates an AI agent to automate
+the issue lifecycle (spec drafting → approval → implementation →
+self-review) with mandatory human approval at every gate. The default
+agent is the Claude CLI; `agent_kind = "acp-claude" | "acp-gemini" |
+"acp-codex"` opts a repo or individual task into an Agent Client
+Protocol subprocess.
 
-## Build & Test
+In addition to GitHub label polling, Hammurabi accepts ideas from chat
+intake sources — today Discord (behind the `discord` Cargo feature),
+designed so additional platforms slot in behind the same
+`DiscordClient` / `Publisher` shape.
 
-```bash
-cargo build --release    # Always use release builds
-cargo test               # Run all unit + integration tests
-```
-
-## Architecture
-
-- **Pure state machine** (`src/state_machine.rs`) -- all transitions are `(State, Event) -> Vec<SideEffect>` with no I/O
-- **Trait-based abstractions** -- `GitHubClient`, `DiscordClient`, `AiAgent`, `WorktreeManager`, `Publisher` traits enable mock-based testing
-- **Multi-repo + multi-intake support** -- `Config` holds `Vec<RepoConfig>` (GitHub label polling) plus `Vec<SourceEntry>` (chat intakes like Discord); canonical issue identity is `(source, repo, external_id)` where `external_id` is the GitHub issue number or Discord thread snowflake
-- **Database** (`src/db.rs`) -- SQLite with WAL mode, wrapped in `Mutex` for thread safety; `UNIQUE(source, repo, external_id)` scopes rows across sources
-- **Publisher** (`src/publisher.rs`) -- source-agnostic progress abstraction. `GithubPublisher` posts issue comments; `DiscordPublisher` posts thread messages; `MultiplexPublisher` fans out. `TransitionContext::publisher_for(issue)` picks the right one at the call site
-- **Transitions** (`src/transitions/`) -- one module per active state, each performing the actual work; `spec_drafting` branches on `issue.source`
-- **Poller** (`src/poller.rs`) -- main daemon loop that iterates over all configured repos each cycle; `discord_intake_once` handles new @mentions for a configured Discord channel
-
-## Key Conventions
-
-- All external dependencies are behind traits (GitHub, Discord, AI, git worktrees, Publisher)
-- Test with mocks in `#[cfg(test)] mod mock` blocks within each module
-- State machine tests must be exhaustive -- one test per valid transition
-- Integration tests live in `tests/` and use `#[path = ...]` to import modules
-- `rusqlite` is used (not sqlx) per design spec -- synchronous access wrapped in `Mutex`
-- Agents live behind `AgentKind` + `AgentRegistry` — add a new kind by extending `src/agents/mod.rs::AgentKind`, registering it in `poller::build_agent_registry`, and (for ACP) supplying an `AcpAgentDef` default in `src/agents/acp.rs`
-- Intake sources live behind `DiscordClient` (and peer traits for future platforms) — a Discord-sourced row has `source=Discord`, `external_id=<thread_id>`, and `github_issue_number=0` until `/confirm` opens the GitHub issue
-- Secrets in config (`bot_token`, etc.) expand via `${VAR}` from the environment and use a manual `Debug` impl so they never leak into logs
-
-## File Layout
-
-```
-src/
-├── main.rs              # CLI entry point
-├── access.rs            # AllowUsers enum (List | All) + RawAccess deserializer
-├── config.rs            # TOML config + env overrides (Config + RepoConfig + DiscordChannelConfig,
-│                        # supports [[repos]] array, [[sources]] kind="discord" blocks,
-│                        # agent_kind selection, [agents.*] subprocess overrides, ${VAR} expansion)
-├── db.rs                # SQLite schema + CRUD; UNIQUE(source, repo, external_id) identity
-├── discord.rs           # DiscordClient trait + DiscordMessage/DiscordThreadRef types + MockDiscordClient
-├── models.rs            # IssueState, SourceKind, TrackedIssue (with is_discord_pending / external_id_u64)
-├── state_machine.rs     # Pure transition function
-├── github.rs            # GitHubClient trait + OctocrabClient
-├── publisher.rs         # Publisher trait + GithubPublisher / DiscordPublisher / MultiplexPublisher
-├── agents/              # AiAgent trait + concrete impls + AgentRegistry
-│   ├── mod.rs           # trait, AiInvocation, AiResult, AgentKind, AgentEvent
-│   ├── claude_cli.rs    # ClaudeCliAgent (streaming stdout with timeout/stall detection)
-│   ├── acp.rs           # AcpAgent (drives acp::Session, forwards events)
-│   ├── registry.rs      # AgentRegistry — dispatch by kind
-│   └── mock.rs          # MockAiAgent (test only)
-├── acp/                 # Minimal ACP (Agent Client Protocol) client — original, not ported
-│   ├── mod.rs
-│   ├── wire.rs          # JSON-RPC framing + typed Method enum
-│   ├── session.rs       # One-shot session: spawn → initialize → new → prompt → cancel
-│   ├── events.rs        # session/update -> AgentEvent classifier
-│   ├── permission.rs    # auto-allow policy for session/request_permission
-│   └── spawn.rs         # cross-platform child spawn + process-group kill
-├── worktree.rs          # WorktreeManager trait + GitWorktreeManager
-├── approval.rs          # Approval gate checking (GitHub /approve + Discord /confirm, /revise, /cancel)
-├── hooks.rs             # Workspace lifecycle hooks (after_create, before_run, after_run, before_remove)
-├── prompts.rs           # AI prompt templates
-├── poller.rs            # Daemon main loop + Discord intake (discord_intake_once, ensure_github_issue,
-│                        # handle_await_spec_approval_discord)
-├── lock.rs              # PID-based lock file
-├── error.rs             # Error types (HammurabiError::{Ai, AiTimeout, Acp, ...})
-└── transitions/
-    ├── mod.rs           # TransitionContext, run_ai_lifecycle, seed_filename,
-    │                    # publisher_for(issue) / thread_id_for(issue)
-    ├── progress.rs      # Live status-message aggregator (Publisher-backed, source-agnostic)
-    ├── spec_drafting.rs # Source-aware: GitHub fetches issue body; Discord uses thread pitch
-    ├── implementing.rs
-    ├── reviewing.rs
-    └── completion.rs
-
-tests/
-├── integration_lifecycle.rs         # Happy-path GitHub-sourced issue lifecycle
-├── integration_error_handling.rs    # Failure/retry paths
-├── integration_discord_lifecycle.rs # Discord intake → spec refine → /confirm → merge → Done
-├── acp_client_integration.rs        # Drives the fake-acp-agent binary end-to-end
-└── support/
-    └── fake_acp_agent/main.rs       # Scripted fake ACP agent (CARGO_BIN_EXE_fake-acp-agent)
-```
-
-## Discord intake status
-
-The Discord runtime ships behind the `discord` Cargo feature:
+## Build & test
 
 ```bash
+cargo build --release               # Always use release builds
 cargo build --release --features discord
-cargo run  --release --features discord watch
+cargo test
 ```
 
-Default builds (no feature) still compile and run; `[[sources]]` entries
-log a warning and are skipped. With the feature on, `SerenityDiscordClient`
-talks to the Discord REST API for fetch / post / edit / start-thread, and
-`run_daemon`:
+## Architectural invariants (must preserve)
 
-1. Connects via `GET /users/@me` to resolve the bot's own id.
-2. Seeds a per-channel cursor from the most recent message so a cold
-   start doesn't re-play history.
-3. After each repo's `poll_cycle`, calls `discord_intake_once` for every
-   Discord source targeting that repo, advancing the cursor.
+- **Pure state machine** (`src/state_machine.rs`) — `(State, Event) →
+  Vec<SideEffect>` with no I/O. The exhaustive test suite there is
+  the authoritative spec; runtime dispatches through
+  `src/transitions/*` in lockstep.
+- **All external deps behind traits** — `GitHubClient`,
+  `DiscordClient`, `AiAgent`, `WorktreeManager`, `Publisher`. Tests
+  use mocks declared in `#[cfg(test)] mod mock` within each module.
+- **Canonical issue identity is `(source, repo, external_id)`** —
+  `source` is `SourceKind::{GitHub, Discord}`; `external_id` is the
+  GitHub issue number or the Discord thread snowflake. SQLite enforces
+  `UNIQUE(source, repo, external_id)`.
+- **`rusqlite` is used, not `sqlx`** — synchronous access wrapped in
+  `Mutex`, per design spec. Don't switch.
+- **Secrets use manual `Debug`** that redacts to `<redacted>` so
+  tokens never reach logs (`bot_token`, `github_token`, App private
+  keys).
+- **`agent_kind` values are kebab-case at the serde boundary** (see
+  `#[serde(rename_all = "kebab-case")]` on `AgentKind` in
+  `src/agents/mod.rs`). Docs, config examples, and deploy templates
+  must use kebab-case to stay loadable.
+- **State machine tests must be exhaustive** — one test per valid
+  transition. Adding a state means adding both a test and a
+  transition module.
 
-Phase 4's `tests/integration_discord_lifecycle.rs` continues to exercise
-the entire lifecycle under mocks (feature-independent). The Gateway
-WebSocket path (real-time UX instead of tick-based polling) is a future
-upgrade behind the same trait — add `client`/`gateway` to serenity's
-features, spawn an `EventHandler` task in `run_daemon`, and bridge
-events into the existing handlers.
+## Agent and intake extension points
+
+- **New agent kind**: extend `AgentKind` (`src/agents/mod.rs`),
+  register it in `poller::build_agent_registry`, and — for ACP —
+  supply an `AcpAgentDef` default in `src/agents/acp.rs`.
+- **New intake source**: follow the `DiscordClient` trait shape and
+  define a new `SourceEntry` variant. A Discord-sourced row starts
+  with `source = Discord`, `external_id = <thread_id>`, and
+  `github_issue_number = 0` until `/confirm` opens the GitHub issue.
+- **Discord runtime** is gated behind the `discord` Cargo feature.
+  Default builds compile and skip `[[sources]]` entries with a
+  warning. With the feature on, `SerenityDiscordClient` talks to the
+  Discord REST API; the runtime uses tick-based polling today (a real-
+  time Gateway path slots in behind the same trait without changing
+  the config shape).
+
+## Conventions
+
+- Integration tests under `tests/` use `#[path = ...]` to pull in
+  internal modules.
+- `cargo test` must be green before any commit (a pre-commit hook
+  enforces this).
+- Run `lineguard <path>` before committing to catch whitespace /
+  encoding issues.
+- Follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`,
+  `chore:`). One concern per commit.
+- Release builds only; the repo's `Cargo.toml` disables debug info for
+  dependencies in dev builds via `[profile.dev.package."*"]`.
+
+## Where else to look
+
+- **Module layout, state graph, trait contracts**: `docs/architecture.md`.
+- **Full config reference**: `hammurabi.toml.example` (one commented
+  file covering every field, intake source, and agent kind).
+- **CLI usage**: `README.md` has a command table; `install.md`
+  documents config discovery, secrets, and authentication modes.
+- **Deployment**: `deploy/docker/README.md` and
+  `deploy/helm/hammurabi/README.md`.
