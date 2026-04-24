@@ -40,7 +40,6 @@ type NotifySlot = Arc<Mutex<Option<mpsc::UnboundedSender<Notification>>>>;
 
 /// Configuration for launching an ACP agent subprocess.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct AcpAgentDef {
     pub command: String,
     pub args: Vec<String>,
@@ -48,6 +47,8 @@ pub struct AcpAgentDef {
 }
 
 /// Information returned from `initialize` that the caller may care about.
+/// `agent_name` and `protocol_version` are logged by `initialize()` itself;
+/// `supports_load_session` is retained for future resumption support.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct InitInfo {
@@ -431,11 +432,19 @@ fn spawn_reader(
                         tracing::warn!(id, "ACP response for unknown id");
                     }
                 }
-                IncomingMessage::Notification { method: _, params } => {
+                IncomingMessage::Notification { method, params } => {
+                    // Only `session/update` is expected from spec-compliant
+                    // agents today. Anything else is logged and dropped so a
+                    // future protocol addition doesn't silently pollute the
+                    // caller's event stream.
+                    if method != Method::SessionUpdate {
+                        tracing::debug!(method = ?method, "ignoring non-session/update notification");
+                        continue;
+                    }
                     if let Some(n) = notify_tx.lock().await.as_ref() {
                         let notif = Notification {
                             jsonrpc: super::wire::JSONRPC_VERSION,
-                            method: "session/update".to_string(),
+                            method: Method::SessionUpdate.as_wire().to_string(),
                             params,
                         };
                         let _ = n.send(notif);

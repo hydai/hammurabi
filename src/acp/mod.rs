@@ -16,13 +16,7 @@
 //! them.
 //!
 //! The module was written from the spec rather than ported from any existing
-//! implementation; see `docs/` for references used.
-//!
-//! Phase 3 lands the protocol + session machinery but does not yet wire an
-//! `AiAgent` impl on top — hence the broad `#[allow(dead_code)]` here. Phase 4
-//! consumes every public item.
-
-#![allow(dead_code)]
+//! implementation.
 
 pub mod events;
 pub mod permission;
