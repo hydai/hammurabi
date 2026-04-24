@@ -19,6 +19,8 @@ mod state_machine;
 mod transitions;
 mod worktree;
 
+use std::path::{Path, PathBuf};
+
 use clap::{Parser, Subcommand};
 
 use crate::db::Database;
@@ -27,6 +29,16 @@ use crate::models::IssueState;
 #[derive(Parser)]
 #[command(name = "hammurabi", about = "AI-powered GitHub issue lifecycle daemon")]
 struct Cli {
+    /// Path to hammurabi.toml. Overrides autodetect (./hammurabi.toml,
+    /// then $HOME/.config/hammurabi/hammurabi.toml) and HAMMURABI_CONFIG_PATH.
+    #[arg(long, global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Directory for mutable state (SQLite DB, bare clones, worktrees, PID lock).
+    /// Overrides HAMMURABI_DATA_DIR. Default: ./.hammurabi.
+    #[arg(long, global = true, value_name = "PATH")]
+    data_dir: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -73,15 +85,18 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    let data_dir = resolve_data_dir(cli.data_dir.clone());
+    let config_path = resolve_config_path(cli.config.clone());
+
     match cli.command {
         Commands::Watch { repo } => {
-            // Set HAMMURABI_REPO before config::load() so the loader can use
+            // Set HAMMURABI_REPO before config::load_from() so the loader can use
             // it as the legacy repo when no repo/[[repos]] is in the config file.
             if let Some(ref r) = repo {
                 std::env::set_var("HAMMURABI_REPO", r);
             }
 
-            let mut config = config::load()?;
+            let mut config = config::load_from(config_path.as_deref())?;
 
             // If CLI repo was given and config has [[repos]], override the list
             if let Some(ref r) = repo {
@@ -103,10 +118,10 @@ async fn main() -> anyhow::Result<()> {
                 "Monitoring repositories"
             );
 
-            poller::run_daemon(config).await?;
+            poller::run_daemon(config, data_dir, config_path).await?;
         }
         Commands::Status { repo } => {
-            let db = open_db()?;
+            let db = open_db(&data_dir)?;
             let mut issues = if let Some(ref r) = repo {
                 db.get_all_issues_for_repo(r)?
             } else {
@@ -175,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Retry { issue_number, repo } => {
-            let db = open_db()?;
+            let db = open_db(&data_dir)?;
             let issue = resolve_issue(&db, issue_number, repo.as_deref())?;
 
             if issue.state != IssueState::Failed {
@@ -201,7 +216,7 @@ async fn main() -> anyhow::Result<()> {
             );
         }
         Commands::Reset { issue_number, repo } => {
-            let db = open_db()?;
+            let db = open_db(&data_dir)?;
             let issue = resolve_issue(&db, issue_number, repo.as_deref())?;
 
             db.update_issue_state(issue.id, IssueState::Discovered, None)?;
@@ -243,15 +258,28 @@ fn resolve_issue(
     }
 }
 
-fn open_db() -> Result<Database, anyhow::Error> {
-    let db_path = ".hammurabi/hammurabi.db";
-    if !std::path::Path::new(db_path).exists() {
+fn resolve_data_dir(cli_override: Option<PathBuf>) -> PathBuf {
+    cli_override
+        .or_else(|| std::env::var_os("HAMMURABI_DATA_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(".hammurabi"))
+}
+
+fn resolve_config_path(cli_override: Option<PathBuf>) -> Option<PathBuf> {
+    cli_override.or_else(|| std::env::var_os("HAMMURABI_CONFIG_PATH").map(PathBuf::from))
+}
+
+fn open_db(data_dir: &Path) -> Result<Database, anyhow::Error> {
+    let db_path = data_dir.join("hammurabi.db");
+    if !db_path.exists() {
         anyhow::bail!(
             "No database found at {}. Run `hammurabi watch` first to initialize.",
-            db_path
+            db_path.display()
         );
     }
-    Ok(Database::open(db_path)?)
+    let path_str = db_path.to_str().ok_or_else(|| {
+        anyhow::anyhow!("data-dir path is not valid UTF-8: {}", db_path.display())
+    })?;
+    Ok(Database::open(path_str)?)
 }
 
 fn format_duration(d: chrono::Duration) -> String {

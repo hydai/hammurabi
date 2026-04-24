@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::access::{AllowUsers, RawAccess};
 use crate::acp::session::AcpAgentDef;
@@ -442,8 +442,21 @@ fn parse_owner_repo(repo: &str) -> Result<(String, String), HammurabiError> {
     Ok((owner.to_string(), repo_name.to_string()))
 }
 
-pub fn load() -> Result<Config, HammurabiError> {
-    let raw: RawConfig = if let Some(path) = find_config_file() {
+/// Load the resolved `Config`, optionally from an explicit path supplied by
+/// the caller (`hammurabi --config <path>`). Precedence for the source file:
+/// 1. `explicit_path` (from CLI flag)
+/// 2. `HAMMURABI_CONFIG_PATH` env var
+/// 3. `./hammurabi.toml` in CWD
+/// 4. `$HOME/.config/hammurabi/hammurabi.toml`
+/// When none of the above is set or readable, an empty `RawConfig` is used
+/// so env-var-only operation (`HAMMURABI_*` overrides) still works.
+pub fn load_from(explicit_path: Option<&Path>) -> Result<Config, HammurabiError> {
+    let resolved_path: Option<PathBuf> = explicit_path
+        .map(|p| p.to_path_buf())
+        .or_else(|| std::env::var_os("HAMMURABI_CONFIG_PATH").map(PathBuf::from))
+        .or_else(find_config_file);
+
+    let raw: RawConfig = if let Some(path) = resolved_path {
         let content = std::fs::read_to_string(&path).map_err(|e| {
             HammurabiError::Config(format!("failed to read {}: {}", path.display(), e))
         })?;

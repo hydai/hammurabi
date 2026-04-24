@@ -107,8 +107,16 @@ async fn seed_discord_cursor(client: &dyn DiscordClient, channel_id: u64) -> Opt
     }
 }
 
-pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
-    let base_dir = PathBuf::from(".hammurabi");
+pub async fn run_daemon(
+    config: Config,
+    data_dir: PathBuf,
+    config_path: Option<PathBuf>,
+) -> Result<(), HammurabiError> {
+    let base_dir = data_dir;
+    tokio::fs::create_dir_all(&base_dir)
+        .await
+        .map_err(HammurabiError::Io)?;
+    tracing::info!(data_dir = %base_dir.display(), "Using data directory");
 
     // Acquire lock
     let lock_path = base_dir.join("daemon.lock");
@@ -117,12 +125,13 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
 
     // Initialize database
     let db_path = base_dir.join("hammurabi.db");
-    tokio::fs::create_dir_all(&base_dir)
-        .await
-        .map_err(HammurabiError::Io)?;
-    let db = Arc::new(Database::open(
-        db_path.to_str().unwrap_or(".hammurabi/hammurabi.db"),
-    )?);
+    let db_path_str = db_path.to_str().ok_or_else(|| {
+        HammurabiError::Config(format!(
+            "data-dir path is not valid UTF-8: {}",
+            db_path.display()
+        ))
+    })?;
+    let db = Arc::new(Database::open(db_path_str)?);
 
     // Build token provider (shared across all repos)
     let token_provider = build_token_provider(&config.github_auth)?;
@@ -240,7 +249,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     // Main poll loop
     loop {
         // Dynamic config reload: re-read config each cycle
-        match config::load() {
+        match config::load_from(config_path.as_deref()) {
             Ok(new_config) => {
                 current_config = new_config;
             }
