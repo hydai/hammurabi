@@ -127,3 +127,40 @@ approvers = ["your-github-username"]
 #     issue, collapsed under <details> once the run finishes.
 #   - Hammurabi auto-approves every `session/request_permission` the agent
 #     emits, matching the existing `--dangerously-skip-permissions` posture.
+
+# ---------------------------------------------------------------------------
+# Alternative intake sources (Discord, ...)
+# ---------------------------------------------------------------------------
+#
+# A `[[sources]]` entry lets Hammurabi accept ideas from a chat platform in
+# addition to the GitHub issue label. Each source points at a configured
+# `[[repos]]` entry by `repo = "owner/name"`; a confirmed spec is opened as
+# a GitHub issue on that repo, then flows through the existing pipeline.
+#
+# Discord lifecycle:
+#   1. User @mentions the bot in an allowlisted channel with an idea.
+#   2. Hammurabi opens a Discord thread and drafts a spec into it.
+#   3. User iterates with `/revise <text>` or approves with `/confirm`.
+#   4. On `/confirm`, Hammurabi opens a GitHub issue carrying the spec
+#      (the existing Implementing/Reviewing pipeline takes over).
+#   5. `/cancel` marks the intake Failed (audit record retained).
+#
+# [[sources]]
+# kind = "discord"
+# name = "hammurabi-intake"                 # label used in logs (optional)
+# channel_id = "1234567890"                 # Discord channel snowflake (as string)
+# repo = "owner/hammurabi"                  # must match a [[repos]] entry
+# bot_token = "${DISCORD_BOT_TOKEN}"        # env-expanded; never inline the token
+# approvers = ["hydai"]                     # Discord usernames who may /confirm
+# agent_kind = "acp-claude"                 # optional per-source override
+# command_prefix = "/"                      # default "/"
+# max_draft_revisions = 5                   # safety cap on /revise iterations
+#
+# Access control (pick one; setting both is an error):
+# allow_users = ["hydai", "teammate"]       # explicit allowlist
+# # allow_all_users = true                  # wildcard
+#
+# NOTE: the Serenity-backed Discord runtime is implemented in-tree behind
+# mocks and exercised by `tests/integration_discord_lifecycle.rs`. A real
+# Gateway-connected client is pending — until then, `[[sources]]` entries
+# are parsed and validated but not polled. See the README for status.
