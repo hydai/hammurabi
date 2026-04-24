@@ -167,6 +167,12 @@ impl AiAgent for AcpAgent {
 
             if let Some(params) = notif.params.as_ref() {
                 if let Some(event) = classify_update(params) {
+                    if let Some(tx) = invocation.events.as_ref() {
+                        // The receiver may already be gone (aggregator shut
+                        // down, e.g. caller dropped the channel). Ignore send
+                        // errors — they never affect the agent run itself.
+                        let _ = tx.send(event.clone());
+                    }
                     apply_event(&event, &mut content, &mut tools);
                 }
             }

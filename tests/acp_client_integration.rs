@@ -46,6 +46,7 @@ fn make_invocation(worktree: &std::path::Path, kind: AgentKind) -> AiInvocation 
         prompt: "Run the scenario.".to_string(),
         timeout_secs: 10,
         stall_timeout_secs: 0,
+        events: None,
     }
 }
 

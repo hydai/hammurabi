@@ -80,6 +80,7 @@ mod tests {
             prompt: prompt.to_string(),
             timeout_secs: 3600,
             stall_timeout_secs: 300,
+            events: None,
         }
     }
 

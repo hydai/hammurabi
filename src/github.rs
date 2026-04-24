@@ -50,6 +50,8 @@ pub trait GitHubClient: Send + Sync {
         since_id: Option<u64>,
     ) -> Result<Vec<GitHubComment>, HammurabiError>;
     async fn post_issue_comment(&self, number: u64, body: &str) -> Result<u64, HammurabiError>;
+    async fn update_issue_comment(&self, comment_id: u64, body: &str)
+        -> Result<(), HammurabiError>;
     async fn create_pull_request(
         &self,
         title: &str,
@@ -336,6 +338,39 @@ impl GitHubClient for OctocrabClient {
                     })?;
 
                 Ok(comment.id.into_inner())
+            }
+        })
+        .await
+    }
+
+    async fn update_issue_comment(
+        &self,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<(), HammurabiError> {
+        let ctx = self.retry_ctx();
+        let body = body.to_string();
+
+        self.retry(|| {
+            let RetryCtx {
+                client,
+                owner,
+                repo,
+            } = ctx.clone();
+            let body = body.clone();
+            async move {
+                client
+                    .issues(&owner, &repo)
+                    .update_comment(octocrab::models::CommentId(comment_id), body)
+                    .await
+                    .map_err(|e| {
+                        HammurabiError::GitHub(format!(
+                            "update comment {}: {}",
+                            comment_id,
+                            format_octocrab_error(&e)
+                        ))
+                    })?;
+                Ok(())
             }
         })
         .await
@@ -643,6 +678,7 @@ pub mod mock {
         pub comments: Mutex<HashMap<u64, Vec<GitHubComment>>>,
         pub pr_statuses: Mutex<HashMap<u64, PrStatus>>,
         pub created_comments: Mutex<Vec<(u64, String)>>,
+        pub updated_comments: Mutex<Vec<(u64, String)>>,
         pub created_prs: Mutex<Vec<(String, String, String, String, u64)>>,
         pub created_issues: Mutex<Vec<(String, String)>>,
         pub file_contents: Mutex<HashMap<(String, String), String>>,
@@ -660,6 +696,7 @@ pub mod mock {
                 comments: Mutex::new(HashMap::new()),
                 pr_statuses: Mutex::new(HashMap::new()),
                 created_comments: Mutex::new(Vec::new()),
+                updated_comments: Mutex::new(Vec::new()),
                 created_prs: Mutex::new(Vec::new()),
                 created_issues: Mutex::new(Vec::new()),
                 file_contents: Mutex::new(HashMap::new()),
@@ -748,6 +785,18 @@ pub mod mock {
                 .unwrap()
                 .push((number, body.to_string()));
             Ok(id)
+        }
+
+        async fn update_issue_comment(
+            &self,
+            comment_id: u64,
+            body: &str,
+        ) -> Result<(), HammurabiError> {
+            self.updated_comments
+                .lock()
+                .unwrap()
+                .push((comment_id, body.to_string()));
+            Ok(())
         }
 
         async fn create_pull_request(

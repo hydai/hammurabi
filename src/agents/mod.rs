@@ -13,6 +13,7 @@ pub mod mock;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 use crate::error::HammurabiError;
 
@@ -93,6 +94,10 @@ pub struct AiInvocation {
     pub prompt: String,
     pub timeout_secs: u64,
     pub stall_timeout_secs: u64,
+    /// Optional channel to stream [`AgentEvent`]s as they arrive. Agents that
+    /// do not produce structured events (e.g. `ClaudeCliAgent`) simply drop
+    /// the sender; the receiver sees the channel close on invoke return.
+    pub events: Option<mpsc::UnboundedSender<AgentEvent>>,
 }
 
 /// Result of a completed agent run.

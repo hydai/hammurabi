@@ -3,10 +3,15 @@ pub mod implementing;
 pub mod reviewing;
 pub mod spec_drafting;
 
+mod progress;
+
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use crate::agents::{AgentKind, AgentRegistry, AiInvocation, AiResult};
+use tokio::sync::mpsc;
+
+use crate::agents::{AgentEvent, AgentKind, AgentRegistry, AiInvocation, AiResult};
 use crate::config::RepoConfig;
 use crate::db::Database;
 use crate::error::HammurabiError;
@@ -115,6 +120,18 @@ pub(crate) async fn run_ai_lifecycle(
     .await?;
 
     let agent = ctx.agents.get(agent_kind)?;
+
+    // Spawn a progress aggregator that surfaces ACP events as a live GitHub
+    // comment on the issue. ClaudeCliAgent ignores the sender, so the
+    // aggregator never posts anything on that path.
+    let (events_tx, events_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let aggregator = tokio::spawn(progress::run_aggregator(
+        ctx.github.clone(),
+        params.issue_number,
+        events_rx,
+        Duration::from_secs(10),
+    ));
+
     let ai_result = agent
         .invoke(AiInvocation {
             agent_kind,
@@ -125,8 +142,13 @@ pub(crate) async fn run_ai_lifecycle(
             prompt: params.prompt,
             timeout_secs: ctx.config.ai_timeout_for_task(&params.ai_task),
             stall_timeout_secs: ctx.config.ai_stall_timeout_for_task(&params.ai_task),
+            events: Some(events_tx),
         })
         .await;
+
+    // Sender dropped when the invocation scope ends; wait for the
+    // aggregator to post its final rendering before proceeding.
+    let _ = aggregator.await;
 
     hooks::run_hook_best_effort(
         "after_run",
