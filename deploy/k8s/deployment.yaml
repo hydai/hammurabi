@@ -37,8 +37,9 @@ spec:
       containers:
         - name: hammurabi
           # Swap the variant suffix (claude | gemini | codex | base) to
-          # match your configured agent_kind.
-          image: ghcr.io/OWNER/hammurabi-claude:latest
+          # match your configured agent_kind. Pin to a released tag —
+          # CI publishes versioned images only, no moving :latest tag.
+          image: ghcr.io/OWNER/hammurabi-claude:v0.1.2
           imagePullPolicy: IfNotPresent
           securityContext:
             readOnlyRootFilesystem: true

@@ -49,6 +49,18 @@ ai_model = "claude-sonnet-4-6"
 # Options: "low", "medium", "high", "max"
 # ai_effort = "high"
 
+# Maximum total seconds per AI invocation (default: 3600). Exceeded
+# invocations are killed and retried up to ai_max_retries times.
+# ai_timeout_secs = 3600
+
+# Kill the AI if it produces no output for this many seconds
+# (default: 0, disabled). Useful for catching hung ACP subprocesses.
+# ai_stall_timeout_secs = 0
+
+# Auto-retries for transient AI errors before transitioning to Failed
+# (default: 2). Set to 0 to fail on the first error.
+# ai_max_retries = 2
+
 # Maximum self-review iterations before the agent stops revising (default: 2)
 # A value of 1 disables the Reviewing feedback loop. Global default; can also
 # be overridden per [[repos]] entry.
