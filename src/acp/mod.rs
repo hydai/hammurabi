@@ -20,6 +20,7 @@
 
 pub mod events;
 pub mod permission;
+pub mod registry;
 pub mod session;
 pub mod spawn;
 pub mod wire;

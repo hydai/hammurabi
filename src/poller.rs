@@ -6,6 +6,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::access::AllowUsers;
+use crate::acp::registry::AcpSessionRegistry;
 use crate::agents::acp::AcpAgent;
 use crate::agents::{AgentKind, AgentRegistry, AiAgent, ClaudeCliAgent};
 use crate::approval::{self, CommentApprovalResult, DiscordApprovalResult, PrApprovalResult};
@@ -25,7 +26,12 @@ use crate::worktree::{
 /// Build the global agent registry from the parsed config. Every supported
 /// agent kind is registered; ACP kinds use the `[agents.*]` overrides the
 /// user supplied (missing sections fall back to hard-coded defaults).
-fn build_agent_registry(config: &Config) -> AgentRegistry {
+/// Each `AcpAgent` holds a clone of `session_registry` so the daemon can
+/// fan-out SIGTERM to every live ACP subprocess on shutdown.
+fn build_agent_registry(
+    config: &Config,
+    session_registry: Arc<AcpSessionRegistry>,
+) -> AgentRegistry {
     let mut map: std::collections::HashMap<AgentKind, Arc<dyn AiAgent>> =
         std::collections::HashMap::new();
     map.insert(AgentKind::ClaudeCli, Arc::new(ClaudeCliAgent::new()));
@@ -39,7 +45,10 @@ fn build_agent_registry(config: &Config) -> AgentRegistry {
             .get(&kind)
             .cloned()
             .unwrap_or_else(|| crate::agents::acp::default_agent_def(kind));
-        map.insert(kind, Arc::new(AcpAgent::new(kind, def)));
+        map.insert(
+            kind,
+            Arc::new(AcpAgent::new(kind, def).with_registry(session_registry.clone())),
+        );
     }
     AgentRegistry::new(map)
 }
@@ -90,6 +99,58 @@ async fn build_discord_client(cfg: &DiscordChannelConfig) -> Option<Arc<dyn Disc
     }
 }
 
+/// Listen for SIGTERM/SIGINT and flip the shutdown token. The *first* signal
+/// requests a graceful drain; a *second* signal immediately exits with the
+/// conventional `128 + SIGINT = 130` status so a stuck daemon can still be
+/// unblocked without waiting for in-flight work.
+///
+/// Windows has no SIGTERM; we fall back to Ctrl-C handling there (tokio's
+/// `signal::ctrl_c` maps to the Windows console event).
+fn spawn_signal_handler(token: tokio_util::sync::CancellationToken) {
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        let mut term =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to install SIGTERM handler: {}", e);
+                    return;
+                }
+            };
+        let mut int = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to install SIGINT handler: {}", e);
+                return;
+            }
+        };
+        tokio::select! {
+            _ = term.recv() => tracing::info!("SIGTERM received — initiating graceful shutdown"),
+            _ = int.recv()  => tracing::info!("SIGINT received — initiating graceful shutdown"),
+        };
+        token.cancel();
+        // Second signal: exit hard.
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+        }
+        tracing::warn!("Second signal received — exit(130) without waiting for drain");
+        std::process::exit(130);
+    });
+
+    #[cfg(not(unix))]
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::info!("Ctrl-C received — initiating graceful shutdown");
+            token.cancel();
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::warn!("Second Ctrl-C received — exit(130) without waiting for drain");
+            std::process::exit(130);
+        }
+    });
+}
+
 /// Seed per-channel cursors at startup so we don't replay the entire
 /// backlog on a cold start. Uses the latest message id visible at init
 /// as the baseline; any message posted after that becomes "new".
@@ -136,9 +197,19 @@ pub async fn run_daemon(
     // Build token provider (shared across all repos)
     let token_provider = build_token_provider(&config.github_auth)?;
 
+    // Shared registry of live ACP subprocess PGIDs. Populated via a per-
+    // session RAII guard inside `AcpAgent::invoke`; consulted at shutdown
+    // to SIGTERM every in-flight child before releasing the lock file.
+    let session_registry = Arc::new(AcpSessionRegistry::new());
+
     // Initialize agent registry (shared, stateless). ACP invocations pick
     // up their config overrides from `config.agents`.
-    let agents = Arc::new(build_agent_registry(&config));
+    let agents = Arc::new(build_agent_registry(&config, session_registry.clone()));
+
+    // Graceful-shutdown cancellation token. First SIGTERM/SIGINT cancels;
+    // second kills hard via exit(130).
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
+    spawn_signal_handler(shutdown_token.clone());
 
     // Initialize per-repo runtimes
     let repos_dir = base_dir.join("repos");
@@ -246,8 +317,14 @@ pub async fn run_daemon(
     let mut last_api_retry_count = current_config.api_retry_count;
     let mut last_auth_fingerprint = auth_fingerprint(&current_config.github_auth);
 
-    // Main poll loop
+    // Main poll loop. Exits cleanly on `shutdown_token.cancel()` (SIGTERM/
+    // SIGINT) between cycles. In-flight `poll_cycle` invocations run to
+    // completion to avoid aborting mid-git or mid-SQLite-transaction.
     loop {
+        if shutdown_token.is_cancelled() {
+            break;
+        }
+
         // Dynamic config reload: re-read config each cycle
         match config::load(&config_source).await {
             Ok(new_config) => {
@@ -364,8 +441,33 @@ pub async fn run_daemon(
             }
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(current_config.poll_interval)).await;
+        // Wake early on shutdown so a SIGTERM during the sleep doesn't
+        // force K8s to wait up to `poll_interval` seconds before the drain
+        // starts.
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(current_config.poll_interval)) => {}
+            _ = shutdown_token.cancelled() => {
+                tracing::info!("Shutdown signaled during sleep — exiting poll loop");
+                break;
+            }
+        }
     }
+
+    // --- Shutdown drain ---
+    tracing::info!("Entering shutdown drain");
+    let killed = session_registry.kill_all();
+    if killed > 0 {
+        tracing::warn!(
+            "Sent SIGTERM to {} in-flight ACP subprocess group(s); SIGKILL follow-up in ~1.5s",
+            killed
+        );
+        // Give the 1.5 s SIGKILL follow-up time to run before we exit so
+        // orphan grandchildren don't escape into the host PID namespace.
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    }
+    tracing::info!("Shutdown complete — releasing lock and exiting");
+    drop(_lock);
+    Ok(())
 }
 
 /// Produce a comparable fingerprint for the auth config so we can detect changes.

@@ -6,6 +6,7 @@
 //! resumption — Hammurabi's transitions are inherently one-shot.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ use tokio::time::{timeout, Instant};
 
 use super::{AgentKind, AiAgent, AiInvocation, AiResult, ToolInvocation, ToolStatus};
 use crate::acp::events::classify_update;
+use crate::acp::registry::{AcpSessionRegistry, SessionGuard};
 use crate::acp::session::{AcpAgentDef, Session};
 use crate::agents::AgentEvent;
 use crate::error::HammurabiError;
@@ -45,6 +47,10 @@ pub fn default_agent_def(kind: AgentKind) -> AcpAgentDef {
 pub struct AcpAgent {
     kind: AgentKind,
     def: AcpAgentDef,
+    /// Shared registry of live ACP PGIDs. Populated via the constructor so
+    /// production code gets fan-out shutdown; tests can leave it `None` and
+    /// keep the existing per-session teardown behavior.
+    session_registry: Option<Arc<AcpSessionRegistry>>,
 }
 
 impl AcpAgent {
@@ -53,7 +59,16 @@ impl AcpAgent {
             kind.is_acp(),
             "AcpAgent requires an ACP AgentKind, got {kind:?}"
         );
-        Self { kind, def }
+        Self {
+            kind,
+            def,
+            session_registry: None,
+        }
+    }
+
+    pub fn with_registry(mut self, registry: Arc<AcpSessionRegistry>) -> Self {
+        self.session_registry = Some(registry);
+        self
     }
 
     /// Expose the underlying command for logs / error messages.
@@ -76,6 +91,14 @@ impl AiAgent for AcpAgent {
 
         // 1. Spawn and handshake.
         let mut session = Session::start(&self.def, worktree).await?;
+        // Register the PGID so a daemon-level shutdown can fan SIGTERM
+        // out to every live ACP child. The guard unregisters on any exit
+        // path from this function.
+        let _registry_guard = self
+            .session_registry
+            .as_ref()
+            .zip(session.pgid())
+            .map(|(reg, pgid)| SessionGuard::new(reg.clone(), pgid));
         let _init = session.initialize().await?;
         let session_id = session.new_session(worktree).await?;
 

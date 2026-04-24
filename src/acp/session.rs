@@ -70,6 +70,13 @@ pub struct Session {
 }
 
 impl Session {
+    /// Process-group id of the spawned agent subprocess, when available.
+    /// Returns `None` on Windows (where we don't manage process groups) and
+    /// for children that were spawned without a usable PID.
+    pub fn pgid(&self) -> Option<i32> {
+        self.pgid
+    }
+
     /// Spawn the subprocess and start the background reader task.
     pub async fn start(def: &AcpAgentDef, cwd: &Path) -> Result<Self, HammurabiError> {
         let cwd_str = cwd
