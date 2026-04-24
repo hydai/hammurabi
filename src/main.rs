@@ -10,6 +10,7 @@ mod lock;
 mod models;
 mod poller;
 mod prompts;
+mod publisher;
 mod state_machine;
 mod transitions;
 mod worktree;

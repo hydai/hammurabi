@@ -17,6 +17,7 @@ use crate::db::Database;
 use crate::error::HammurabiError;
 use crate::github::GitHubClient;
 use crate::hooks;
+use crate::publisher::Publisher;
 use crate::worktree::WorktreeManager;
 
 /// Convention for the per-agent instruction file seeded into the worktree
@@ -33,6 +34,10 @@ pub(crate) fn seed_filename(kind: AgentKind) -> &'static str {
 #[derive(Clone)]
 pub struct TransitionContext {
     pub github: Arc<dyn GitHubClient>,
+    /// Source-agnostic progress publisher. For GitHub-originated issues
+    /// this is a `GithubPublisher` wrapping `github`; Discord-originated
+    /// issues will eventually swap in a different implementation.
+    pub publisher: Arc<dyn Publisher>,
     pub agents: Arc<AgentRegistry>,
     pub worktree: Arc<dyn WorktreeManager>,
     pub db: Arc<Database>,
@@ -121,12 +126,13 @@ pub(crate) async fn run_ai_lifecycle(
 
     let agent = ctx.agents.get(agent_kind)?;
 
-    // Spawn a progress aggregator that surfaces ACP events as a live GitHub
-    // comment on the issue. ClaudeCliAgent ignores the sender, so the
-    // aggregator never posts anything on that path.
+    // Spawn a progress aggregator that surfaces ACP events as a live status
+    // comment on the issue's thread (GitHub comment or Discord message).
+    // ClaudeCliAgent ignores the sender, so the aggregator never posts
+    // anything on that path.
     let (events_tx, events_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let aggregator = tokio::spawn(progress::run_aggregator(
-        ctx.github.clone(),
+        ctx.publisher.clone(),
         params.issue_number,
         events_rx,
         Duration::from_secs(10),

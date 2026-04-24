@@ -217,8 +217,8 @@ pub async fn execute(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<()
                 )
             };
             if let Err(e) = ctx
-                .github
-                .post_issue_comment(issue.github_issue_number, &comment_msg)
+                .publisher
+                .post(issue.github_issue_number, &comment_msg)
                 .await
             {
                 tracing::warn!(
@@ -269,8 +269,8 @@ pub async fn execute(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<()
 
                 // Best-effort comment: DB state is already committed
                 if let Err(e) = ctx
-                    .github
-                    .post_issue_comment(
+                    .publisher
+                    .post(
                         issue.github_issue_number,
                         &format!(
                             "Auto-review found issues after {} attempts. Proceeding to human review. PR: #{}",
@@ -308,8 +308,8 @@ pub async fn execute(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<()
 
                 // Best-effort comment: DB state is already committed
                 if let Err(e) = ctx
-                    .github
-                    .post_issue_comment(
+                    .publisher
+                    .post(
                         issue.github_issue_number,
                         &format!(
                             "Auto-review found issues (attempt {}/{}). Revising implementation...\n\n{}",
@@ -390,6 +390,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt,
             db: db.clone(),
@@ -440,6 +441,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt,
             db: db.clone(),
@@ -494,6 +496,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt,
             db: db.clone(),
@@ -540,6 +543,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt,
             db: db.clone(),
@@ -610,6 +614,7 @@ mod tests {
         let wt = Arc::new(MockWorktreeManager::new(tmp.clone()));
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai.clone()),
             worktree: wt.clone(),
             db: db.clone(),

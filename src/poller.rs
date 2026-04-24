@@ -42,9 +42,10 @@ fn build_agent_registry(config: &Config) -> AgentRegistry {
     AgentRegistry::new(map)
 }
 
-/// Per-repo runtime context (GitHub client + worktree manager).
+/// Per-repo runtime context (GitHub client + worktree manager + publisher).
 struct RepoRuntime {
     github: Arc<dyn GitHubClient>,
+    publisher: Arc<dyn crate::publisher::Publisher>,
     worktree: Arc<dyn WorktreeManager>,
     config: Arc<RepoConfig>,
 }
@@ -118,6 +119,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
     for runtime in cached_runtimes.values() {
         let ctx = TransitionContext {
             github: runtime.github.clone(),
+            publisher: runtime.publisher.clone(),
             agents: agents.clone(),
             worktree: runtime.worktree.clone(),
             db: db.clone(),
@@ -207,6 +209,7 @@ pub async fn run_daemon(config: Config) -> Result<(), HammurabiError> {
             if let Some(runtime) = cached_runtimes.get(&repo_config.repo) {
                 let ctx = TransitionContext {
                     github: runtime.github.clone(),
+                    publisher: runtime.publisher.clone(),
                     agents: agents.clone(),
                     worktree: runtime.worktree.clone(),
                     db: db.clone(),
@@ -309,8 +312,13 @@ async fn init_repo_runtime(
     let default_branch = github.get_default_branch().await?;
     worktree_mgr.ensure_default_branch(&default_branch).await?;
 
+    let github_dyn: Arc<dyn GitHubClient> = github.clone();
+    let publisher: Arc<dyn crate::publisher::Publisher> =
+        Arc::new(crate::publisher::GithubPublisher::new(github_dyn.clone()));
+
     Ok(RepoRuntime {
-        github,
+        github: github_dyn,
+        publisher,
         worktree: worktree_mgr,
         config: Arc::new(repo_config.clone()),
     })
@@ -497,8 +505,8 @@ async fn poll_cycle(ctx: &TransitionContext) -> Result<(), HammurabiError> {
                         );
                         let _ = ctx.db.update_issue_error(issue.id, &e.to_string());
                         let _ = ctx
-                            .github
-                            .post_issue_comment(
+                            .publisher
+                            .post(
                                 issue.github_issue_number,
                                 &format!(
                                     "Error during {} (after {} retries): {}",
@@ -588,8 +596,8 @@ async fn handle_await_spec_approval(
             IssueState::Implementing,
             Some(IssueState::AwaitSpecApproval),
         )?;
-        ctx.github
-            .post_issue_comment(
+        ctx.publisher
+            .post(
                 issue.github_issue_number,
                 "Spec auto-approved (bypass mode). Starting implementation...",
             )
@@ -614,8 +622,8 @@ async fn handle_await_spec_approval(
                 IssueState::Implementing,
                 Some(IssueState::AwaitSpecApproval),
             )?;
-            ctx.github
-                .post_issue_comment(
+            ctx.publisher
+                .post(
                     issue.github_issue_number,
                     "Spec approved. Starting implementation...",
                 )
@@ -630,8 +638,8 @@ async fn handle_await_spec_approval(
                 IssueState::SpecDrafting,
                 Some(IssueState::AwaitSpecApproval),
             )?;
-            ctx.github
-                .post_issue_comment(
+            ctx.publisher
+                .post(
                     issue.github_issue_number,
                     "Feedback received. Revising spec...",
                 )
@@ -697,8 +705,8 @@ async fn handle_await_pr_approval(
                     IssueState::Implementing,
                     Some(IssueState::AwaitPRApproval),
                 )?;
-                ctx.github
-                    .post_issue_comment(
+                ctx.publisher
+                    .post(
                         issue.github_issue_number,
                         "PR feedback received. Revising implementation...",
                     )
@@ -743,8 +751,8 @@ async fn handle_failed(
         if let Some(prev) = issue.previous_state {
             ctx.db.update_issue_state(issue.id, prev, None)?;
             ctx.db.reset_retry_count(issue.id)?;
-            ctx.github
-                .post_issue_comment(
+            ctx.publisher
+                .post(
                     issue.github_issue_number,
                     &format!("Retrying from {} state...", prev),
                 )
@@ -762,8 +770,8 @@ async fn check_stale(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<()
         let now = chrono::Utc::now().naive_utc();
         let days_since = (now - updated).num_days();
         if days_since >= ctx.config.stale_timeout_days as i64 {
-            ctx.github
-                .post_issue_comment(
+            ctx.publisher
+                .post(
                     issue.github_issue_number,
                     &format!(
                         "This issue has been in {} state for {} days. Please review and take action.",
@@ -859,7 +867,8 @@ mod tests {
 
     fn build_ctx(gh: Arc<MockGitHubClient>, db: Arc<Database>) -> TransitionContext {
         TransitionContext {
-            github: gh,
+            github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(
                 std::env::temp_dir().join("hammurabi-test-poller"),

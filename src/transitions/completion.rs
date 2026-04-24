@@ -18,8 +18,8 @@ pub async fn check(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<(), 
                 Some(IssueState::AwaitPRApproval),
             )?;
 
-            ctx.github
-                .post_issue_comment(
+            ctx.publisher
+                .post(
                     issue.github_issue_number,
                     "Implementation PR merged. Issue complete!",
                 )
@@ -40,8 +40,8 @@ pub async fn check(ctx: &TransitionContext, issue: &TrackedIssue) -> Result<(), 
             ctx.db
                 .update_issue_error(issue.id, "Implementation PR was closed without merge")?;
 
-            ctx.github
-                .post_issue_comment(
+            ctx.publisher
+                .post(
                     issue.github_issue_number,
                     "Implementation PR was closed without merge. Use `/retry` to retry.",
                 )
@@ -83,6 +83,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
             db: db.clone(),
@@ -112,7 +113,8 @@ mod tests {
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
         let ctx = TransitionContext {
-            github: gh,
+            github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
             db: db.clone(),
@@ -138,7 +140,8 @@ mod tests {
         let issue = db.get_issue("owner/repo", 1).unwrap().unwrap();
 
         let ctx = TransitionContext {
-            github: gh,
+            github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(Arc::new(MockAiAgent::new())),
             worktree: Arc::new(MockWorktreeManager::new(tmp.clone())),
             db: db.clone(),

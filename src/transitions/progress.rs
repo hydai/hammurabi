@@ -1,9 +1,10 @@
 //! Live progress-comment aggregator for ACP agent runs.
 //!
 //! The transition pipeline feeds [`AgentEvent`]s from the active agent into
-//! this task, which turns them into a single rolling GitHub comment on the
-//! underlying issue. Updates are throttled to a minimum interval so we don't
-//! hammer the GitHub API on chatty agents.
+//! this task, which turns them into a single rolling status message on the
+//! underlying thread. The target (GitHub comment, Discord message, ...) is
+//! selected by the supplied [`Publisher`]. Updates are throttled to a
+//! minimum interval so we don't hammer the backing API on chatty agents.
 //!
 //! ClaudeCliAgent never emits events; for that agent kind this task silently
 //! exits when the channel closes.
@@ -14,18 +15,18 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::agents::{AgentEvent, ToolInvocation, ToolStatus};
-use crate::github::GitHubClient;
+use crate::publisher::Publisher;
 
 /// Drain an `AgentEvent` stream, rendering progress updates to a single
-/// GitHub comment on `issue_number`. Returns when the sender is dropped.
+/// status message on `thread_id`. Returns when the sender is dropped.
 pub async fn run_aggregator(
-    github: Arc<dyn GitHubClient>,
-    issue_number: u64,
+    publisher: Arc<dyn Publisher>,
+    thread_id: u64,
     mut rx: mpsc::UnboundedReceiver<AgentEvent>,
     throttle: Duration,
 ) {
     let mut state = AggregatorState::new();
-    let mut comment_id: Option<u64> = None;
+    let mut message_id: Option<u64> = None;
     let mut last_render: Option<Instant> = None;
 
     while let Some(event) = rx.recv().await {
@@ -38,44 +39,44 @@ pub async fn run_aggregator(
         };
         if due {
             let body = state.render(false);
-            comment_id = post_or_update(&*github, issue_number, comment_id, &body).await;
+            message_id = post_or_update(&*publisher, thread_id, message_id, &body).await;
             last_render = Some(Instant::now());
         }
     }
 
     // Final update on stream close — "collapsed" flag hides the block under
-    // a <details> so completed runs stay tidy in the issue thread.
+    // a <details> so completed runs stay tidy in the thread.
     if state.has_visible_events() {
         let body = state.render(true);
-        let _ = post_or_update(&*github, issue_number, comment_id, &body).await;
+        let _ = post_or_update(&*publisher, thread_id, message_id, &body).await;
     }
 }
 
 async fn post_or_update(
-    github: &dyn GitHubClient,
-    issue_number: u64,
+    publisher: &dyn Publisher,
+    thread_id: u64,
     existing: Option<u64>,
     body: &str,
 ) -> Option<u64> {
     match existing {
         Some(id) => {
-            if let Err(e) = github.update_issue_comment(id, body).await {
+            if let Err(e) = publisher.update(thread_id, id, body).await {
                 tracing::warn!(
-                    issue = issue_number,
-                    comment = id,
+                    thread = thread_id,
+                    message = id,
                     error = %e,
-                    "progress comment update failed"
+                    "progress message update failed"
                 );
             }
             Some(id)
         }
-        None => match github.post_issue_comment(issue_number, body).await {
+        None => match publisher.post(thread_id, body).await {
             Ok(id) => Some(id),
             Err(e) => {
                 tracing::warn!(
-                    issue = issue_number,
+                    thread = thread_id,
                     error = %e,
-                    "progress comment post failed; giving up"
+                    "progress message post failed; giving up"
                 );
                 None
             }
@@ -227,11 +228,13 @@ mod tests {
     #[tokio::test]
     async fn aggregator_posts_initial_and_final_updates() {
         use crate::github::mock::MockGitHubClient;
+        use crate::publisher::GithubPublisher;
 
         let gh = Arc::new(MockGitHubClient::new());
+        let publisher = Arc::new(GithubPublisher::new(gh.clone()));
         let (tx, rx) = mpsc::unbounded_channel();
         let throttle = Duration::from_millis(10);
-        let handle = tokio::spawn(run_aggregator(gh.clone(), 42, rx, throttle));
+        let handle = tokio::spawn(run_aggregator(publisher, 42, rx, throttle));
 
         tx.send(AgentEvent::ToolStarted {
             id: "t".into(),
@@ -261,11 +264,13 @@ mod tests {
     #[tokio::test]
     async fn aggregator_is_silent_when_no_events_arrive() {
         use crate::github::mock::MockGitHubClient;
+        use crate::publisher::GithubPublisher;
 
         let gh = Arc::new(MockGitHubClient::new());
+        let publisher = Arc::new(GithubPublisher::new(gh.clone()));
         let (tx, rx) = mpsc::unbounded_channel::<AgentEvent>();
         let throttle = Duration::from_millis(10);
-        let handle = tokio::spawn(run_aggregator(gh.clone(), 99, rx, throttle));
+        let handle = tokio::spawn(run_aggregator(publisher, 99, rx, throttle));
         drop(tx);
         handle.await.unwrap();
 

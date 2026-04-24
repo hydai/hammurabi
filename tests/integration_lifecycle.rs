@@ -24,6 +24,8 @@ mod hooks;
 mod models;
 #[path = "../src/prompts.rs"]
 mod prompts;
+#[path = "../src/publisher.rs"]
+mod publisher;
 #[path = "../src/state_machine.rs"]
 mod state_machine;
 #[path = "../src/transitions/mod.rs"]
@@ -111,6 +113,7 @@ async fn test_full_lifecycle() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
+        publisher: std::sync::Arc::new(publisher::GithubPublisher::new(gh.clone())),
         agents: Arc::new(AgentRegistry::for_test(ai)),
         worktree: wt,
         db: db.clone(),
@@ -245,6 +248,7 @@ async fn test_bypass_spec_auto_approval() {
 
     let ctx = TransitionContext {
         github: gh.clone(),
+        publisher: std::sync::Arc::new(publisher::GithubPublisher::new(gh.clone())),
         agents: Arc::new(AgentRegistry::for_test(ai)),
         worktree: wt,
         db: db.clone(),

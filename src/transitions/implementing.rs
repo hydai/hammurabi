@@ -138,8 +138,8 @@ pub async fn execute(
 
         // Best-effort: DB state is already committed to AwaitPRApproval
         if let Err(e) = ctx
-            .github
-            .post_issue_comment(
+            .publisher
+            .post(
                 issue.github_issue_number,
                 "Implementation revised based on PR feedback. Please review the updated PR.",
             )
@@ -173,8 +173,8 @@ pub async fn execute(
         };
         // Best-effort: DB state is already committed to Reviewing
         if let Err(e) = ctx
-            .github
-            .post_issue_comment(issue.github_issue_number, comment_msg)
+            .publisher
+            .post(issue.github_issue_number, comment_msg)
             .await
         {
             tracing::warn!(
@@ -249,6 +249,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt.clone(),
             db: db.clone(),
@@ -300,6 +301,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt.clone(),
             db: db.clone(),
@@ -350,6 +352,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt.clone(),
             db: db.clone(),
@@ -424,6 +427,7 @@ mod tests {
 
         let ctx = TransitionContext {
             github: gh.clone(),
+            publisher: std::sync::Arc::new(crate::publisher::GithubPublisher::new(gh.clone())),
             agents: test_registry_with(ai),
             worktree: wt.clone(),
             db: db.clone(),
