@@ -1,0 +1,113 @@
+name: Docker smoke test
+
+# On any PR touching Dockerfiles or the Rust source, build each variant
+# locally (linux/amd64, --load into the local docker daemon) and assert
+# the final image boots and the embedded binary reports --version.
+# Keeps image rot (upstream base changes, npm registry changes) out of
+# the main branch.
+on:
+  pull_request:
+    paths:
+      - "deploy/docker/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "tests/**"
+      - ".github/workflows/docker-smoke.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: docker-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-smoke:
+    name: ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, claude, gemini, codex]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build (linux/amd64, loaded locally)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c1c # v6.18.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.${{ matrix.variant }}
+          platforms: linux/amd64
+          load: true
+          tags: hammurabi-${{ matrix.variant }}:smoke
+          cache-from: type=gha,scope=smoke-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=smoke-${{ matrix.variant }}
+
+      - name: Smoke — hammurabi --version
+        env:
+          IMAGE: hammurabi-${{ matrix.variant }}:smoke
+        run: |
+          out=$(docker run --rm "$IMAGE" --version)
+          echo "$out"
+          printf '%s\n' "$out" | grep -q "^hammurabi "
+
+      - name: Smoke — hammurabi --help shows --config / --data-dir
+        env:
+          IMAGE: hammurabi-${{ matrix.variant }}:smoke
+        run: |
+          out=$(docker run --rm "$IMAGE" --help)
+          printf '%s\n' "$out" | grep -q -- "--data-dir"
+          printf '%s\n' "$out" | grep -q -- "--config"
+
+      - name: Smoke — ACP agent handshake (claude/gemini/codex variants)
+        if: matrix.variant != 'base'
+        env:
+          IMAGE: hammurabi-${{ matrix.variant }}:smoke
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+
+          # Pick the ACP binary for this variant.
+          case "$VARIANT" in
+            claude) ACP_CMD="claude-agent-acp" ;;
+            gemini) ACP_CMD="gemini --acp" ;;
+            codex)  ACP_CMD="codex-acp" ;;
+          esac
+
+          # Craft an ACP `initialize` request. The agent may reject it
+          # without credentials, but it should at least respond with a
+          # JSON-RPC result or error (not silently die). This proves
+          # the binary is on PATH and the image started cleanly.
+          INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}'
+
+          # Run with `--entrypoint /bin/bash` to bypass tini so we can
+          # pipe stdin directly into the CLI. We accept either a JSON-RPC
+          # response OR a non-empty stderr banner as proof of life —
+          # agents that require auth typically banner + exit, which
+          # still tells us "the binary exists and launches".
+          set +e
+          OUT=$(
+            printf '%s' "$INIT" \
+              | timeout 30 docker run -i --rm \
+                  --entrypoint /bin/bash \
+                  "$IMAGE" \
+                  -c "$ACP_CMD 2>&1 | head -c 4096"
+          )
+          ec=$?
+          set -e
+          echo "--- agent output (exit=$ec) ---"
+          echo "$OUT"
+          echo "--- end agent output ---"
+
+          # Don't hard-fail on the agent's own exit code (auth may fail).
+          # Do fail if there was no output at all — that would mean the
+          # ACP binary is missing or the image's ENTRYPOINT is broken.
+          if [ -z "$OUT" ]; then
+            echo "::error::Agent produced no output — binary missing or crashed silently."
+            exit 1
+          fi

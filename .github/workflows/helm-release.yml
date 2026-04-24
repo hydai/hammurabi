@@ -1,0 +1,111 @@
+name: Publish Helm chart
+
+# Fires on stable version tags. Publishes the chart two ways:
+#   1. OCI at oci://ghcr.io/<owner>/charts/hammurabi (the modern path).
+#   2. (Optional) GitHub Pages via helm/chart-releaser-action — commented
+#      out until the repo enables Pages.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+" # stable tags only
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Chart tag to publish (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: helm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CHART_PATH: deploy/helm/hammurabi
+
+jobs:
+  package-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GITHUB_REF_INPUT: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG_NAME="$INPUT_TAG"
+          else
+            TAG_NAME="${GITHUB_REF_INPUT#refs/tags/}"
+          fi
+          printf 'name=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
+          printf 'semver=%s\n' "${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp Chart.yaml appVersion
+        env:
+          SEMVER: ${{ steps.tag.outputs.semver }}
+          CHART_PATH: ${{ env.CHART_PATH }}
+        run: |
+          yq -i ".appVersion = \"${SEMVER}\"" "${CHART_PATH}/Chart.yaml"
+          echo "--- Chart.yaml after stamp ---"
+          cat "${CHART_PATH}/Chart.yaml"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.1
+        with:
+          version: v3.16.2
+
+      - name: Helm lint
+        env:
+          CHART_PATH: ${{ env.CHART_PATH }}
+        run: helm lint "$CHART_PATH"
+
+      - name: Render against default values (sanity)
+        env:
+          CHART_PATH: ${{ env.CHART_PATH }}
+        run: helm template sanity "$CHART_PATH" --debug > /dev/null
+
+      # --- OCI publish ---------------------------------------------------
+      - name: Log in to GHCR as Helm OCI
+        env:
+          GITHUB_TOKEN_INPUT: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$GITHUB_TOKEN_INPUT" \
+            | helm registry login ghcr.io --username "$ACTOR" --password-stdin
+
+      - name: Package
+        env:
+          CHART_PATH: ${{ env.CHART_PATH }}
+          SEMVER: ${{ steps.tag.outputs.semver }}
+        run: |
+          mkdir -p /tmp/chart
+          helm package "$CHART_PATH" \
+            --destination /tmp/chart \
+            --version "$SEMVER" \
+            --app-version "$SEMVER"
+
+      - name: Push OCI chart
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          CHART_TGZ=$(ls /tmp/chart/hammurabi-*.tgz | head -n 1)
+          helm push "$CHART_TGZ" "oci://ghcr.io/${OWNER}/charts"
+
+      # --- chart-releaser (Pages feed) — re-enable when Pages is live. ---
+      # - name: Run chart-releaser
+      #   uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1.6.0
+      #   with:
+      #     charts_dir: deploy/helm
+      #   env:
+      #     CR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

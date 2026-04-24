@@ -1,0 +1,112 @@
+name: Promote images to stable
+
+# OpenAB's "promote, don't rebuild" pattern: on a stable tag (`v0.1.0`
+# without `-`), find the newest matching pre-release digest and retag it
+# as the stable semver, major.minor, and `latest`. No rebuild — the
+# stable artifact is bit-identical to the tested beta.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+" # stable tags only; pre-releases have `-`
+  workflow_dispatch:
+    inputs:
+      beta_tag:
+        description: "Pre-release tag to promote (e.g. v0.1.0-beta.3)"
+        required: true
+        type: string
+      stable_tag:
+        description: "Stable tag to promote to (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: promote-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  REPO_PREFIX: ghcr.io/${{ github.repository }}
+
+jobs:
+  promote:
+    name: Promote ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, claude, gemini, codex]
+    steps:
+      - name: Checkout (full history — needed to resolve newest beta)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve stable + beta tag names
+        id: tags
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_STABLE: ${{ inputs.stable_tag }}
+          INPUT_BETA: ${{ inputs.beta_tag }}
+          GITHUB_REF_INPUT: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            STABLE_TAG="$INPUT_STABLE"
+            BETA_TAG="$INPUT_BETA"
+          else
+            STABLE_TAG="${GITHUB_REF_INPUT#refs/tags/}"
+            # Find the newest `vX.Y.Z-*` tag for this version.
+            BETA_TAG=$(git tag -l "${STABLE_TAG}-*" --sort=-creatordate | head -n 1)
+            if [ -z "$BETA_TAG" ]; then
+              echo "::error::No pre-release tag matching ${STABLE_TAG}-*. Push a v*-beta.N tag (and let images.yml build it) before promoting."
+              exit 1
+            fi
+          fi
+          printf 'stable=%s\n' "${STABLE_TAG#v}" >> "$GITHUB_OUTPUT"
+          printf 'beta=%s\n' "${BETA_TAG#v}" >> "$GITHUB_OUTPUT"
+          # major.minor — e.g. 0.1.0 -> 0.1
+          MAJOR_MINOR=$(printf '%s' "${STABLE_TAG#v}" | cut -d. -f1-2)
+          printf 'major_minor=%s\n' "$MAJOR_MINOR" >> "$GITHUB_OUTPUT"
+          echo "Promoting ${BETA_TAG} -> ${STABLE_TAG} (major.minor ${MAJOR_MINOR})"
+
+      - name: Assert beta image exists
+        env:
+          IMAGE: ${{ env.REPO_PREFIX }}-${{ matrix.variant }}
+          BETA: ${{ steps.tags.outputs.beta }}
+        run: |
+          echo "Inspecting ${IMAGE}:${BETA}"
+          docker buildx imagetools inspect "${IMAGE}:${BETA}"
+
+      - name: Retag to stable, major.minor, and latest
+        env:
+          IMAGE: ${{ env.REPO_PREFIX }}-${{ matrix.variant }}
+          BETA: ${{ steps.tags.outputs.beta }}
+          STABLE: ${{ steps.tags.outputs.stable }}
+          MAJOR_MINOR: ${{ steps.tags.outputs.major_minor }}
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${STABLE}" \
+            --tag "${IMAGE}:${MAJOR_MINOR}" \
+            --tag "${IMAGE}:latest" \
+            "${IMAGE}:${BETA}"
+
+      - name: Verify
+        env:
+          IMAGE: ${{ env.REPO_PREFIX }}-${{ matrix.variant }}
+          STABLE: ${{ steps.tags.outputs.stable }}
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${STABLE}"

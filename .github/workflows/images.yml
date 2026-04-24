@@ -1,0 +1,189 @@
+name: Build container images
+
+# Fires on pre-release tags only. Stable tags (`v0.1.0` without `-`) go
+# through release-promote.yml, which retags the beta digest without
+# rebuilding — OpenAB's "bit-identical artifact" supply-chain pattern.
+#
+# Also supports manual dispatch for testing the matrix against a branch.
+on:
+  push:
+    tags:
+      - "v*-*" # v0.1.0-beta.1 etc.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build as (e.g. v0.1.0-beta.1)"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # `${{ github.repository }}` is e.g. `hydai/hammurabi`. Each variant
+  # publishes to `ghcr.io/<owner>/hammurabi-<variant>`.
+  REPO_PREFIX: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: ${{ matrix.variant }} / ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, claude, gemini, codex]
+        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            # Native arm64 runners beat QEMU for a Rust compile by
+            # 10-15×; GitHub's ubuntu-24.04-arm is free for public repos.
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve tag name
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GITHUB_REF_INPUT: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG_NAME="$INPUT_TAG"
+          else
+            # strip refs/tags/
+            TAG_NAME="${GITHUB_REF_INPUT#refs/tags/}"
+          fi
+          printf 'name=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Derive platform suffix
+        id: platform
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          # linux/amd64 -> amd64
+          printf 'suffix=%s\n' "${PLATFORM#linux/}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (digest-only)
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c1c # v6.18.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.${{ matrix.variant }}
+          platforms: ${{ matrix.platform }}
+          # push-by-digest: true produces no named tag, only a content-
+          # addressed digest; merge-manifests assembles them into
+          # multi-arch manifest lists below.
+          outputs: type=image,name=${{ env.REPO_PREFIX }}-${{ matrix.variant }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.platform }}
+          provenance: false
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VARIANT: ${{ matrix.variant }}
+          PLATFORM_SUFFIX: ${{ steps.platform.outputs.suffix }}
+        run: |
+          mkdir -p /tmp/digests
+          printf '%s' "$DIGEST" > "/tmp/digests/${VARIANT}-${PLATFORM_SUFFIX}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: digest-${{ matrix.variant }}-${{ steps.platform.outputs.suffix }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-manifests:
+    name: Merge manifests (${{ matrix.variant }})
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, claude, gemini, codex]
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: /tmp/digests
+          pattern: digest-${{ matrix.variant }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve tag and sha names
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GITHUB_REF_INPUT: ${{ github.ref }}
+          GITHUB_SHA_INPUT: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG_NAME="$INPUT_TAG"
+          else
+            TAG_NAME="${GITHUB_REF_INPUT#refs/tags/}"
+          fi
+          # v0.1.0-beta.1 → 0.1.0-beta.1 (strip leading v for container semver).
+          printf 'name=%s\n' "${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+          printf 'sha=%s\n' "${GITHUB_SHA_INPUT:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Create multi-arch manifest list
+        env:
+          IMAGE: ${{ env.REPO_PREFIX }}-${{ matrix.variant }}
+          TAG_NAME: ${{ steps.tag.outputs.name }}
+          SHA_TAG: ${{ steps.tag.outputs.sha }}
+        run: |
+          cd /tmp/digests
+          DIGEST_ARGS=""
+          for f in *; do
+            DIGEST=$(cat "$f")
+            DIGEST_ARGS="$DIGEST_ARGS ${IMAGE}@${DIGEST}"
+          done
+          # Primary tags: the pre-release semver (e.g. 0.1.0-beta.1) + short sha.
+          # shellcheck disable=SC2086
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${TAG_NAME}" \
+            --tag "${IMAGE}:${SHA_TAG}" \
+            $DIGEST_ARGS
+
+      - name: Inspect manifest
+        env:
+          IMAGE: ${{ env.REPO_PREFIX }}-${{ matrix.variant }}
+          TAG_NAME: ${{ steps.tag.outputs.name }}
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${TAG_NAME}"
