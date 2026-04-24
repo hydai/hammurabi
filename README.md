@@ -19,7 +19,7 @@ Human approval is required at every stage. The daemon never merges a PR or auto-
 
 ## Prerequisites
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- An AI agent that Hammurabi can drive. Defaults to the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code); see [Agent selection (ACP)](#agent-selection-acp) to route through Gemini or Codex instead
 - GitHub personal access token with `repo` scope
 - `git` on `PATH`
 - Rust toolchain (to build from source)
@@ -124,6 +124,51 @@ Config is loaded from `./hammurabi.toml` or `~/.config/hammurabi/hammurabi.toml`
 | `github_token` | -- | Falls back to `GITHUB_TOKEN` env var |
 
 Per-task overrides for `ai_model`, `ai_max_turns`, `ai_effort`, `ai_timeout_secs`, and `ai_stall_timeout_secs` are supported under `[spec]` and `[implement]` sections.
+
+### Agent selection (ACP)
+
+By default Hammurabi drives the Claude CLI. You can instead (or additionally) route tasks through the **Agent Client Protocol** (ACP) and use Gemini or Codex. Agent selection follows a three-level precedence: per-task override → per-repo default → global default → `claude-cli`.
+
+| `agent_kind` | Driver | Install |
+|--------------|--------|---------|
+| `claude-cli` (default) | `claude --print --output-format stream-json ...` | Claude Code CLI (see Prerequisites) |
+| `acp-claude` | ACP via `claude-agent-acp` | `npm i -g @agentclientprotocol/claude-agent-acp @anthropic-ai/claude-code` and `export CLAUDE_CODE_EXECUTABLE=$(which claude)` |
+| `acp-gemini` | ACP via `gemini --acp` | `npm i -g @google/gemini-cli` |
+| `acp-codex` | ACP via `codex-acp` | `npm i -g @zed-industries/codex-acp @openai/codex` |
+
+Example: use Gemini for spec drafting, Claude for implementation, Codex for review.
+
+```toml
+repo = "owner/repo"
+ai_model = "claude-sonnet-4-6"     # ignored for ACP kinds unless they honor `model` configOption
+approvers = ["alice"]
+github_token = "ghp_..."
+
+agent_kind = "acp-claude"          # global default
+
+[spec]
+agent_kind = "acp-gemini"
+
+[review]
+agent_kind = "acp-codex"
+```
+
+Override a subprocess invocation (command / args / env) per ACP kind:
+
+```toml
+[agents.acp_gemini]
+command = "gemini"
+args = ["--acp"]
+env = { GEMINI_API_KEY = "${GEMINI_API_KEY}" }
+```
+
+When an ACP agent runs, Hammurabi mirrors its tool-call events as a live progress comment on the underlying issue, collapsed under `<details>` once the run finishes. The Claude CLI path is unchanged and produces no streaming events.
+
+**Seed files.** Before each run Hammurabi writes the task-specific instructions as an agent-native file: `CLAUDE.md` for `claude-cli` / `acp-claude`, `GEMINI.md` for `acp-gemini`, `AGENTS.md` for `acp-codex`.
+
+**Trust model.** Hammurabi auto-approves every `session/request_permission` call from the agent, matching the existing `--dangerously-skip-permissions` posture. Only enable ACP agents you would trust under that posture. `max_turns` and `ai_effort` are Claude-CLI specific and are silently ignored by ACP kinds.
+
+**Platform.** ACP kinds require POSIX process-group signalling for clean teardown. The crate compiles on Windows (tree-kill is degraded to a single-process kill) but ACP runs are only fully supported on macOS / Linux.
 
 ### Multi-Repo Configuration
 

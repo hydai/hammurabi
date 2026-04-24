@@ -65,3 +65,65 @@ approvers = ["your-github-username"]
 # ai_model = "claude-sonnet-4-6"
 # ai_max_turns = 50
 # ai_effort = "high"
+
+# ---------------------------------------------------------------------------
+# Agent selection (ACP)
+# ---------------------------------------------------------------------------
+#
+# By default Hammurabi drives the Claude CLI directly (`agent_kind =
+# "claude-cli"`). Alternatively, you can route tasks through the Agent Client
+# Protocol (ACP) and run Gemini or Codex instead of — or alongside — Claude.
+#
+# Available kinds:
+#   claude-cli  -- default; `claude --print --output-format stream-json ...`
+#   acp-claude  -- ACP via `claude-agent-acp` (npm)
+#   acp-gemini  -- ACP via `gemini --acp` (native)
+#   acp-codex   -- ACP via `codex-acp` (npm)
+#
+# Install hints (only needed for the kinds you actually use):
+#   acp-claude  -- npm i -g @agentclientprotocol/claude-agent-acp @anthropic-ai/claude-code
+#                  export CLAUDE_CODE_EXECUTABLE=$(which claude)
+#   acp-gemini  -- npm i -g @google/gemini-cli
+#   acp-codex   -- npm i -g @zed-industries/codex-acp @openai/codex
+#
+# Global default (applies to all repos unless overridden):
+# agent_kind = "acp-claude"
+#
+# Per-repo override:
+# [[repos]]
+# repo = "owner/repo"
+# agent_kind = "acp-gemini"
+#
+# Per-task override (falls back to per-repo, then global, then claude-cli):
+# [spec]
+# agent_kind = "acp-gemini"
+#
+# [implement]
+# agent_kind = "acp-claude"
+#
+# [review]
+# agent_kind = "acp-codex"
+#
+# Override the subprocess invocation for a given ACP kind (optional — every
+# field is optional and falls back to the built-in default command/args):
+#
+# [agents.acp_claude]
+# command = "claude-agent-acp"
+# args = []
+# env = { CLAUDE_CODE_EXECUTABLE = "/usr/local/bin/claude" }
+#
+# [agents.acp_gemini]
+# command = "gemini"
+# args = ["--acp"]
+# env = { GEMINI_API_KEY = "${GEMINI_API_KEY}" }
+#
+# [agents.acp_codex]
+# command = "codex-acp"
+# args = []
+#
+# Notes:
+#   - `max_turns` and `ai_effort` are Claude-specific; ACP kinds ignore them.
+#   - ACP runs stream tool-call progress back as a live GitHub comment on the
+#     issue, collapsed under <details> once the run finishes.
+#   - Hammurabi auto-approves every `session/request_permission` the agent
+#     emits, matching the existing `--dangerously-skip-permissions` posture.
