@@ -55,6 +55,16 @@ impl Database {
     fn run_migrations(&self) -> Result<(), HammurabiError> {
         let conn = self.conn();
 
+        // Disable FK enforcement during migrations. libsqlite3-sys's bundled
+        // build defaults FKs to ON, and SQLite >= 3.25 rewrites FK references
+        // in child tables when their parent is renamed. Our table-rebuild
+        // pattern (RENAME -> CREATE -> INSERT -> DROP) then trips
+        // "FOREIGN KEY constraint failed" on the DROP whenever child rows
+        // exist, leaving the database in a partially-migrated state. Turn
+        // enforcement back on at the end so runtime writes still get checked.
+        conn.execute_batch("PRAGMA foreign_keys=OFF;")
+            .map_err(db_err)?;
+
         // Check if we need to migrate from old schema
         let has_old_schema = conn
             .prepare("SELECT spec_pr_number FROM issues LIMIT 0")
@@ -323,6 +333,9 @@ impl Database {
             );",
         )
         .map_err(db_err)?;
+
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(db_err)?;
 
         Ok(())
     }
