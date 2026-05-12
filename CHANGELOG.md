@@ -1,4 +1,10 @@
 # Changelog
+## 0.1.4 (2026-05-12)
+
+### Fixes
+
+- disable FK enforcement during schema migrations (#10)
+
 ## 0.1.3 (2026-04-24)
 
 ### Fixes
